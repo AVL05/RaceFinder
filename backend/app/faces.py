@@ -18,6 +18,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from .device import resolve_face_device
+from .resize import resize_rgb
 
 log = logging.getLogger("racefinder.faces")
 
@@ -203,9 +204,8 @@ class FaceEngine:
                 raw.draft("RGB", (DETECT_MAX_SIDE, DETECT_MAX_SIDE))
             im = ImageOps.exif_transpose(raw).convert("RGB")
         s = min(1.0, DETECT_MAX_SIDE / max(im.size))
-        if s < 1:
-            im = im.resize((int(im.width * s), int(im.height * s)), Image.LANCZOS)
-        bgr = np.ascontiguousarray(np.asarray(im)[:, :, ::-1])
+        rgb = resize_rgb(im, (int(im.width * s), int(im.height * s))) if s < 1 else np.asarray(im)
+        bgr = np.ascontiguousarray(rgb[:, :, ::-1])
         h, w = bgr.shape[:2]
         faces = self._detect(bgr)
         out = []

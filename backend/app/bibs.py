@@ -17,6 +17,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from .device import ocr_kwargs, resolve_ocr_device, session_providers
+from .resize import resize_rgb
 
 log = logging.getLogger("racefinder.bibs")
 
@@ -221,17 +222,17 @@ class BibReader:
             c = self.cfg
             run = self._run2 if c.two_stage else self._run
             s1 = min(1.0, c.full_max / max(W, H))
-            a = np.asarray(im.resize((max(1, int(W * s1)), max(1, int(H * s1))), Image.LANCZOS) if s1 < 1 else im)
+            a = resize_rgb(im, (max(1, int(W * s1)), max(1, int(H * s1)))) if s1 < 1 else np.asarray(im)
             dets += run(a, s1, (0, 0), H)
             tile = c.tile_trigger and max(W, H) > c.tile_trigger and (
                 c.tile_policy == "siempre" or (c.tile_policy == "si_vacio" and not dets))
             if tile:
                 s2 = min(1.0, c.tile_max / max(W, H))
-                big = im.resize((int(W * s2), int(H * s2)), Image.LANCZOS) if s2 < 1 else im
-                bw, bh = big.size
+                big = resize_rgb(im, (int(W * s2), int(H * s2))) if s2 < 1 else np.asarray(im)
+                bh, bw = big.shape[:2]
                 tw, th = int(bw * c.tile_frac), int(bh * c.tile_frac)
                 for ox in (0, bw - tw):
                     for oy in (0, bh - th):
-                        chunk = np.asarray(big.crop((ox, oy, ox + tw, oy + th)))
+                        chunk = big[oy:oy + th, ox:ox + tw]
                         dets += run(chunk, s2, (ox, oy), H)
         return merge(dets)
