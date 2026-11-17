@@ -102,7 +102,6 @@ El OCR de dorsales puede ir en la GPU. Las caras siguen en CPU (OpenCV 5 no apro
 backend\.venv\Scripts\python.exe -m pip uninstall -y onnxruntime
 backend\.venv\Scripts\python.exe -m pip install -r backend\requirements-gpu.txt   # CUDA 13 (NVIDIA) con paquetes pip; DirectML: ver el archivo
 backend\.venv\Scripts\python.exe backend\tools\gpu_bench.py "RUTA_A_TUS_FOTOS"   # compara CPU y GPU y comprueba que da los mismos dorsales
-backend.venvScriptspython.exe backend	oolsgpu_bench.py "RUTA_A_TUS_FOTOS"   # compara CPU y GPU y comprueba que da los mismos dorsales
 ```
 
 `RACEFINDER_DEVICE=auto|cpu|cuda|dml` (por defecto `auto`: GPU si está disponible). `/api/health` muestra `ocr_device`. Si la GPU no se puede cargar (faltan CUDA/cuDNN) se avisa en el registro y se usa la CPU. Con GPU, prueba `RACEFINDER_WORKERS` 4-6.
