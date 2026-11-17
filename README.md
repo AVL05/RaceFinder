@@ -96,12 +96,12 @@ La biblioteca (`data/`) no está en el repositorio: se crea vacía en cada equip
 
 ### GPU para leer dorsales (opcional)
 
-El OCR de dorsales puede ir en la GPU. Las caras siguen en CPU (OpenCV 5 no aprovecha la GPU con sus modelos; medido). Con el `onnxruntime` normal todo va en CPU como siempre. Para activarla, en `backend/` y con el entorno virtual activo:
+El OCR de dorsales puede ir en la GPU. Las caras siguen en CPU (OpenCV 5 no aprovecha la GPU con sus modelos; medido). Con el `onnxruntime` normal todo va en CPU como siempre. Para activarla, desde la raíz del repositorio (medido en una RTX 5060 Ti: OCR ×2,1 más rápido):
 
 ```bash
-pip uninstall -y onnxruntime
-pip install -r requirements-gpu.txt   # CUDA (NVIDIA); para DirectML edita el archivo, instrucciones dentro
-python tools/gpu_bench.py RUTA_A_TUS_FOTOS   # compara CPU y GPU en tus fotos y comprueba que da los mismos dorsales
+backend.venvScriptspython.exe -m pip uninstall -y onnxruntime
+backend.venvScriptspython.exe -m pip install -r backendequirements-gpu.txt   # CUDA 13 (NVIDIA) con paquetes pip; DirectML: ver el archivo
+backend.venvScriptspython.exe backend	oolsgpu_bench.py "RUTA_A_TUS_FOTOS"   # compara CPU y GPU y comprueba que da los mismos dorsales
 ```
 
 `RACEFINDER_DEVICE=auto|cpu|cuda|dml` (por defecto `auto`: GPU si está disponible). `/api/health` muestra `ocr_device`. Si la GPU no se puede cargar (faltan CUDA/cuDNN) se avisa en el registro y se usa la CPU. Con GPU, prueba `RACEFINDER_WORKERS` 4-6.

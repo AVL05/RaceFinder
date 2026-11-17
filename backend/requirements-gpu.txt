@@ -1,17 +1,26 @@
-# GPU opcional. RaceFinder funciona igual sin esto (CPU). Elige UNA opción y sustituye el onnxruntime normal:
+# GPU opcional. RaceFinder funciona igual sin esto (CPU). Elige UNA opción y sustituye el onnxruntime normal.
+# Desde la raíz del repo, con el entorno del proyecto:
 #
-#   pip uninstall -y onnxruntime
-#   pip install -r requirements-gpu.txt        # opción CUDA (NVIDIA), o la de DirectML de abajo
+#   backend\.venv\Scripts\python.exe -m pip uninstall -y onnxruntime
+#   backend\.venv\Scripts\python.exe -m pip install -r backend\requirements-gpu.txt
 #
-# Opción A · NVIDIA con CUDA (la más rápida). Requiere CUDA 12.x/13 y cuDNN 9 instalados en el sistema
-# (o como paquetes pip nvidia-*). Las RTX serie 50 (Blackwell) necesitan CUDA 12.8 o superior.
+# Opción A · NVIDIA con CUDA 13 (la más rápida; probada en RTX 5060 Ti: OCR ×2,1 frente a CPU).
+# No hace falta instalar el toolkit de CUDA: las librerías van como paquetes pip y ONNX Runtime las encuentra solo.
+# Si ves "cublasLt64_13.dll ... missing", es que faltan estos paquetes.
 onnxruntime-gpu==1.32.0
+nvidia-cuda-runtime
+nvidia-cublas
+nvidia-cudnn-cu13
+nvidia-cufft
+nvidia-curand
+nvidia-cuda-nvrtc
 
-# Opción B · DirectML (cualquier GPU con DirectX 12 en Windows, sin instalar CUDA). Comenta la A y descomenta:
+# Opción B · DirectML (cualquier GPU con DirectX 12 en Windows, sin CUDA). Comenta la A y descomenta:
 # onnxruntime-directml==1.24.4
 #
 # Variables de entorno (opcionales):
 #   RACEFINDER_DEVICE=auto|cpu|cuda|dml       OCR de dorsales (auto = GPU si está disponible)
 #   (las caras siguen en CPU: OpenCV 5 no aprovecha la GPU con estos modelos)
 #   RACEFINDER_WORKERS=3                      fotos a la vez; con GPU prueba 4-6
-# Comprobar que de verdad se usa la GPU y cuánto gana:  python tools/gpu_bench.py CARPETA_DE_FOTOS
+# Comprobar que de verdad se usa la GPU y cuánto gana:
+#   backend\.venv\Scripts\python.exe backend\tools\gpu_bench.py "CARPETA_DE_FOTOS"
