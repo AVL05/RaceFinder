@@ -90,7 +90,7 @@ La biblioteca (`data/`) no está en el repositorio: se crea vacía en cada equip
 
 | Variable | Por defecto | Para qué |
 |---|---|---|
-| `RACEFINDER_WORKERS` | 3 | Fotos analizadas a la vez (dorsales y caras). En una máquina de 16 núcleos, 3 rinde ≈1,3-1,5× lo que 1; con más núcleos prueba 4-6 y mide. |
+| `RACEFINDER_WORKERS` | 3 | Fotos analizadas a la vez (dorsales y caras). En una máquina de 16 núcleos, 3 rinde ≈1,3-1,5× lo que 1; con más núcleos prueba 4-6 y mide (máximo 16). |
 | `RACEFINDER_IMPORT_THREADS` | 6 | Hilos de la importación de carpetas. |
 | `RACEFINDER_DATA` | `./data` | Dónde se guarda la biblioteca. Si la carpeta de fotos está en otro disco, los enlaces duros no son posibles y se copia. |
 
@@ -104,7 +104,7 @@ backend\.venv\Scripts\python.exe -m pip install -r backend\requirements-gpu.txt 
 backend\.venv\Scripts\python.exe backend\tools\gpu_bench.py "RUTA_A_TUS_FOTOS"   # compara CPU y GPU y comprueba que da los mismos dorsales
 ```
 
-`RACEFINDER_DEVICE=auto|cpu|cuda|dml` (por defecto `auto`: GPU si está disponible); `RACEFINDER_FACE_DEVICE` hace lo mismo solo para las caras (por defecto sigue a la anterior). `/api/health` muestra `ocr_device` y `face_device`. Si la GPU no se puede cargar (faltan CUDA/cuDNN) se avisa en el registro y se usa la CPU. Con GPU, prueba `RACEFINDER_WORKERS` 4-6.
+`RACEFINDER_DEVICE=auto|cpu|cuda|dml` (por defecto `auto`: GPU si está disponible); `RACEFINDER_FACE_DEVICE` hace lo mismo solo para las caras (por defecto sigue a la anterior). `/api/health` muestra `ocr_device` y `face_device`. Si la GPU no se puede cargar (faltan CUDA/cuDNN) se avisa en el registro y se usa la CPU. Con GPU, prueba `RACEFINDER_WORKERS` 6-12 y mide.
 
 `RACEFINDER_FAST_RESIZE=1` reduce las fotos con `cv2.resize` en vez de PIL Lanczos (3-9× más rápido en esa fase, que con GPU pasa a ser lo que más pesa). Cambia ligeramente los píxeles y puede mover alguna lectura límite, por eso está apagado por defecto: `gpu_bench.py` compara dorsales y caras con y sin él sobre tus fotos para que decidas.
 

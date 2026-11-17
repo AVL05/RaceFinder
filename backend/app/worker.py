@@ -20,6 +20,7 @@ MAX_ATTEMPTS = 3
 # es de un solo hilo y deja la CPU ociosa. Medido con fotos reales de 20 MP (mismas detecciones): 3 hilos
 # ≈ 1,3-1,5× más rápido que 1; con 6 ya no mejora. Cambiar con RACEFINDER_WORKERS.
 DEFAULT_WORKERS = 3
+MAX_WORKERS = 16  # tope de seguridad: con GPU y muchos núcleos más de 8 puede seguir ayudando (mide)
 
 
 class Worker:
@@ -32,7 +33,7 @@ class Worker:
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._paused = threading.Event()
-        self.n_workers = max(1, min(8, int(n_workers or os.environ.get("RACEFINDER_WORKERS", DEFAULT_WORKERS))))
+        self.n_workers = max(1, min(MAX_WORKERS, int(n_workers or os.environ.get("RACEFINDER_WORKERS", DEFAULT_WORKERS))))
         self.threads = []
         self._lock = threading.Lock()    # reclamar una foto y registrarla como activa es una sola operación
         self._active = set()

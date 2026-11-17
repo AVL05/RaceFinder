@@ -22,6 +22,6 @@ nvidia-cuda-nvrtc
 #   RACEFINDER_DEVICE=auto|cpu|cuda|dml       OCR de dorsales (auto = GPU si está disponible)
 #   RACEFINDER_FACE_DEVICE=auto|cpu|cuda|dml  caras (auto = igual que RACEFINDER_DEVICE; cpu = OpenCV como siempre)
 #   RACEFINDER_FAST_RESIZE=0|1                redimensionado rápido de las fotos (apagado por defecto; ver README)
-#   RACEFINDER_WORKERS=3                      fotos a la vez; con GPU prueba 4-6
+#   RACEFINDER_WORKERS=3                      fotos a la vez (máx. 16); con GPU prueba 6-12
 # Comprobar que de verdad se usa la GPU y cuánto gana:
 #   backend\.venv\Scripts\python.exe backend\tools\gpu_bench.py "CARPETA_DE_FOTOS"
