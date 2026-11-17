@@ -171,7 +171,7 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "ocr_engine": worker.reader.engine_name}
+        return {"status": "ok", "ocr_engine": worker.reader.engine_name, "ocr_device": worker.reader.device}
 
     @app.get("/api/stats")
     def stats():

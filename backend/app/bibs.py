@@ -8,12 +8,17 @@ Estrategia (MVP, sin modelo de dorsales entrenado):
  4. Fusión de duplicados entre pasadas (mismo número y cajas solapadas).
 La 'confianza' es la puntuación del OCR, NO una probabilidad calibrada.
 """
+import logging
 import re
 import cv2
 from dataclasses import dataclass, asdict, fields, replace
 
 import numpy as np
 from PIL import Image, ImageOps
+
+from .device import ocr_kwargs, resolve_ocr_device, session_providers
+
+log = logging.getLogger("racefinder.bibs")
 
 # Solo se corrige letra->dígito cuando la mayoría del token ya son dígitos.
 LETTER_TO_DIGIT = {"O": "0", "D": "0", "Q": "0", "I": "1", "L": "1", "|": "1", "Z": "2", "S": "5", "B": "8", "G": "6"}
@@ -116,19 +121,30 @@ def similar_numbers(a: str, b: str) -> bool:
 class BibReader:
     engine_name = "rapidocr-onnx-ppocr"
 
-    def __init__(self, cfg=None, ocr=None):
+    def __init__(self, cfg=None, ocr=None, device=None):
         self.cfg = cfg or BibConfig()
         self._ocr = ocr
+        self.device = device or resolve_ocr_device()  # 'cpu' | 'cuda' | 'dml'
 
     def with_config(self, cfg):
         """Misma sesión ONNX (carga costosa), otros parámetros."""
-        return BibReader(cfg, ocr=self.ocr)
+        return BibReader(cfg, ocr=self.ocr, device=self.device)
 
     @property
     def ocr(self):
         if self._ocr is None:
             from rapidocr_onnxruntime import RapidOCR
-            self._ocr = RapidOCR()
+            self._ocr = RapidOCR(**ocr_kwargs(self.device))
+            if self.device != "cpu":
+                active = session_providers(self._ocr)
+                gpu_ep = {"cuda": "CUDAExecutionProvider", "dml": "DmlExecutionProvider"}[self.device]
+                if gpu_ep in active:
+                    log.info("OCR de dorsales en GPU (%s)", gpu_ep)
+                else:
+                    # RapidOCR vuelve a CPU sin lanzar error si no puede cargar la GPU (p. ej. faltan DLL de CUDA)
+                    log.warning("Se pidió GPU (%s) para el OCR pero ONNX Runtime usa %s: faltan librerías CUDA/cuDNN?",
+                                self.device, active or "CPU")
+                    self.device = "cpu"
         return self._ocr
 
     def _run(self, arr_rgb, scale, offset, orig_h):

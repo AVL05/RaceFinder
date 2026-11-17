@@ -94,4 +94,16 @@ La biblioteca (`data/`) no está en el repositorio: se crea vacía en cada equip
 | `RACEFINDER_IMPORT_THREADS` | 6 | Hilos de la importación de carpetas. |
 | `RACEFINDER_DATA` | `./data` | Dónde se guarda la biblioteca. Si la carpeta de fotos está en otro disco, los enlaces duros no son posibles y se copia. |
 
+### GPU para leer dorsales (opcional)
+
+El OCR de dorsales puede ir en la GPU. Las caras siguen en CPU (OpenCV 5 no aprovecha la GPU con sus modelos; medido). Con el `onnxruntime` normal todo va en CPU como siempre. Para activarla, en `backend/` y con el entorno virtual activo:
+
+```bash
+pip uninstall -y onnxruntime
+pip install -r requirements-gpu.txt   # CUDA (NVIDIA); para DirectML edita el archivo, instrucciones dentro
+python tools/gpu_bench.py RUTA_A_TUS_FOTOS   # compara CPU y GPU en tus fotos y comprueba que da los mismos dorsales
+```
+
+`RACEFINDER_DEVICE=auto|cpu|cuda|dml` (por defecto `auto`: GPU si está disponible). `/api/health` muestra `ocr_device`. Si la GPU no se puede cargar (faltan CUDA/cuDNN) se avisa en el registro y se usa la CPU. Con GPU, prueba `RACEFINDER_WORKERS` 4-6.
+
 El selector de carpetas usa `tkinter` (en Linux: `sudo apt install python3-tk`). Si no está disponible, *Carpeta* cae al selector del navegador.

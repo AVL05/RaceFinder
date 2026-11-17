@@ -1,0 +1,17 @@
+# GPU opcional. RaceFinder funciona igual sin esto (CPU). Elige UNA opción y sustituye el onnxruntime normal:
+#
+#   pip uninstall -y onnxruntime
+#   pip install -r requirements-gpu.txt        # opción CUDA (NVIDIA), o la de DirectML de abajo
+#
+# Opción A · NVIDIA con CUDA (la más rápida). Requiere CUDA 12.x/13 y cuDNN 9 instalados en el sistema
+# (o como paquetes pip nvidia-*). Las RTX serie 50 (Blackwell) necesitan CUDA 12.8 o superior.
+onnxruntime-gpu==1.32.0
+
+# Opción B · DirectML (cualquier GPU con DirectX 12 en Windows, sin instalar CUDA). Comenta la A y descomenta:
+# onnxruntime-directml==1.24.4
+#
+# Variables de entorno (opcionales):
+#   RACEFINDER_DEVICE=auto|cpu|cuda|dml       OCR de dorsales (auto = GPU si está disponible)
+#   (las caras siguen en CPU: OpenCV 5 no aprovecha la GPU con estos modelos)
+#   RACEFINDER_WORKERS=3                      fotos a la vez; con GPU prueba 4-6
+# Comprobar que de verdad se usa la GPU y cuánto gana:  python tools/gpu_bench.py CARPETA_DE_FOTOS
