@@ -96,7 +96,7 @@ La biblioteca (`data/`) no está en el repositorio: se crea vacía en cada equip
 
 ### GPU para leer dorsales (opcional)
 
-El OCR de dorsales puede ir en la GPU. Las caras siguen en CPU (OpenCV 5 no aprovecha la GPU con sus modelos; medido). Con el `onnxruntime` normal todo va en CPU como siempre. Para activarla, desde la raíz del repositorio (medido en una RTX 5060 Ti: OCR ×2,1 más rápido):
+El OCR de dorsales y el reconocimiento facial pueden ir en la GPU (las caras ejecutan los mismos modelos con ONNX Runtime, porque OpenCV 5 ignora la GPU; en CPU siguen usando OpenCV como siempre). Con el `onnxruntime` normal todo va en CPU como siempre. Para activarla, desde la raíz del repositorio (medido en una RTX 5060 Ti: OCR ×2,1 más rápido):
 
 ```bash
 backend\.venv\Scripts\python.exe -m pip uninstall -y onnxruntime
@@ -104,6 +104,6 @@ backend\.venv\Scripts\python.exe -m pip install -r backend\requirements-gpu.txt 
 backend\.venv\Scripts\python.exe backend\tools\gpu_bench.py "RUTA_A_TUS_FOTOS"   # compara CPU y GPU y comprueba que da los mismos dorsales
 ```
 
-`RACEFINDER_DEVICE=auto|cpu|cuda|dml` (por defecto `auto`: GPU si está disponible). `/api/health` muestra `ocr_device`. Si la GPU no se puede cargar (faltan CUDA/cuDNN) se avisa en el registro y se usa la CPU. Con GPU, prueba `RACEFINDER_WORKERS` 4-6.
+`RACEFINDER_DEVICE=auto|cpu|cuda|dml` (por defecto `auto`: GPU si está disponible); `RACEFINDER_FACE_DEVICE` hace lo mismo solo para las caras (por defecto sigue a la anterior). `/api/health` muestra `ocr_device` y `face_device`. Si la GPU no se puede cargar (faltan CUDA/cuDNN) se avisa en el registro y se usa la CPU. Con GPU, prueba `RACEFINDER_WORKERS` 4-6.
 
 El selector de carpetas usa `tkinter` (en Linux: `sudo apt install python3-tk`). Si no está disponible, *Carpeta* cae al selector del navegador.

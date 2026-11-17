@@ -7,6 +7,7 @@ Principios:
  - La similitud es un coseno entre vectores, NO una probabilidad.
 """
 import hashlib
+import logging
 import os
 import threading
 import urllib.request
@@ -15,6 +16,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
+
+from .device import resolve_face_device
+
+log = logging.getLogger("racefinder.faces")
 
 MODELS = {
     # 2026may: re-exportación oficial de 2023mar con entrada dinámica, la recomendada para OpenCV 5.x.
@@ -62,16 +67,130 @@ def ensure_models(models_dir=MODELS_DIR):
             os.replace(tmp, dst)
 
 
+class OrtFaceModels:
+    """YuNet + SFace sobre ONNX Runtime (permite GPU). Replica cv2.FaceDetectorYN y cv2.FaceRecognizerSF:
+    mismas cajas, puntos faciales y vectores (se comprueba contra OpenCV en tests/test_faces_ort.py)."""
+    STRIDES = (8, 16, 32)
+    # Plantilla de 5 puntos en 112x112 (la misma que usa cv2.FaceRecognizerSF.alignCrop)
+    DST = np.float32([[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366], [41.5493, 92.3655], [70.7299, 92.2041]])
+
+    def __init__(self, models_dir=MODELS_DIR, device="cpu", providers=None, score_thr=0.8, nms_thr=0.3, top_k=5000):
+        import onnxruntime as ort
+        self.score_thr, self.nms_thr, self.top_k = score_thr, nms_thr, top_k
+        so = ort.SessionOptions()
+        so.log_severity_level = 3
+        if device == "cuda":
+            # HEURISTIC: el detector recibe tamaños distintos y EXHAUSTIVE reprobaría los algoritmos con cada tamaño nuevo
+            providers = providers or [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"}), "CPUExecutionProvider"]
+        elif device == "dml":
+            so.enable_mem_pattern = False  # requisitos de DirectML
+            so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            providers = providers or ["DmlExecutionProvider", "CPUExecutionProvider"]
+        else:
+            providers = providers or ["CPUExecutionProvider"]
+        self.det = ort.InferenceSession(str(models_dir / MODELS["det"][0]), so, providers=providers)
+        self.rec = ort.InferenceSession(str(models_dir / MODELS["rec"][0]), so, providers=providers)
+        wanted = providers[0][0] if isinstance(providers[0], tuple) else providers[0]
+        if self.det.get_providers()[0] != wanted or self.rec.get_providers()[0] != wanted:
+            raise RuntimeError(f"ONNX Runtime no activó {wanted} para las caras (usa {self.det.get_providers()})")
+        self.providers = self.det.get_providers()
+        self._det_in = self.det.get_inputs()[0].name
+        self._rec_in = self.rec.get_inputs()[0].name
+        self._det_out = [o.name for o in self.det.get_outputs()]
+
+    def detect(self, bgr):
+        """Array (N, 15): x, y, w, h, 5 puntos (x, y) y puntuación, como cv2.FaceDetectorYN.detect."""
+        h, w = bgr.shape[:2]
+        ph, pw = ((h - 1) // 32 + 1) * 32, ((w - 1) // 32 + 1) * 32  # el modelo exige múltiplos de 32 (relleno abajo/derecha)
+        blob = np.zeros((1, 3, ph, pw), np.float32)
+        blob[0, :, :h, :w] = bgr.transpose(2, 0, 1)
+        out = dict(zip(self._det_out, self.det.run(None, {self._det_in: blob})))
+        rows = []
+        for s in self.STRIDES:
+            cols = pw // s
+            cls, obj = out[f"cls_{s}"].reshape(-1), out[f"obj_{s}"].reshape(-1)
+            sc = np.sqrt(np.clip(cls, 0, 1) * np.clip(obj, 0, 1))
+            keep = np.nonzero(sc >= self.score_thr)[0]
+            if not len(keep):
+                continue
+            bb, kp = out[f"bbox_{s}"].reshape(-1, 4)[keep], out[f"kps_{s}"].reshape(-1, 5, 2)[keep]
+            c, r = (keep % cols).astype(np.float32), (keep // cols).astype(np.float32)
+            bw, bh = np.exp(bb[:, 2]) * s, np.exp(bb[:, 3]) * s
+            x, y = (c + bb[:, 0]) * s - bw / 2, (r + bb[:, 1]) * s - bh / 2
+            lm = (kp + np.stack([c, r], axis=1)[:, None, :]) * s
+            rows.append(np.column_stack([x, y, bw, bh, lm.reshape(-1, 10), sc[keep]]))
+        if not rows:
+            return np.zeros((0, 15), np.float32)
+        faces = np.concatenate(rows).astype(np.float32)
+        idx = cv2.dnn.NMSBoxes([[int(f[0]), int(f[1]), int(f[2]), int(f[3])] for f in faces], faces[:, -1].tolist(),
+                               self.score_thr, self.nms_thr, 1.0, self.top_k)
+        return faces[np.array(idx, dtype=int).reshape(-1)]
+
+    @staticmethod
+    def _similarity(src, dst):
+        """Transformación de semejanza por mínimos cuadrados (Umeyama), la que usa OpenCV para alinear."""
+        src, dst = np.asarray(src, np.float64), np.asarray(dst, np.float64)
+        sm, dm = src.mean(0), dst.mean(0)
+        s0, d0 = src - sm, dst - dm
+        U, S, Vt = np.linalg.svd(d0.T @ s0 / len(src))
+        d = np.array([1.0, -1.0 if np.linalg.det(U) * np.linalg.det(Vt) < 0 else 1.0])
+        R = U @ np.diag(d) @ Vt
+        scale = (S * d).sum() / ((s0 ** 2).sum() / len(src))
+        return np.hstack([scale * R, (dm - scale * R @ sm)[:, None]])
+
+    def align(self, bgr, face):
+        M = self._similarity(np.asarray(face[4:14]).reshape(5, 2), self.DST)
+        return cv2.warpAffine(bgr, M, (112, 112), flags=cv2.INTER_LINEAR)
+
+    def embed(self, bgr, face):
+        blob = cv2.dnn.blobFromImage(self.align(bgr, face), 1.0, (112, 112), (0, 0, 0), True, False)
+        return self.rec.run(None, {self._rec_in: blob})[0].ravel()
+
+
+_ort_cache = {}
+
+
+def get_ort_models(models_dir, device):
+    """Una sola carga de modelos para todos los hilos (las sesiones de ONNX Runtime son seguras entre hilos)."""
+    with _lock:
+        key = (str(models_dir), device)
+        if key not in _ort_cache:
+            _ort_cache[key] = OrtFaceModels(models_dir, device)
+        return _ort_cache[key]
+
+
 class FaceEngine:
-    def __init__(self, models_dir=MODELS_DIR):
+    def __init__(self, models_dir=MODELS_DIR, device=None):
         self.models_dir = models_dir
-        self._det = self._rec = None
+        self.device = device or resolve_face_device()  # 'cpu' (OpenCV DNN, como siempre) | 'cuda' | 'dml' (ONNX Runtime)
+        self._det = self._rec = self._ort = None
 
     def _load(self):
-        if self._det is None:
+        if self._det is None and self._ort is None:
             ensure_models(self.models_dir)
+            if self.device != "cpu":
+                try:
+                    self._ort = get_ort_models(self.models_dir, self.device)
+                    log.info("Reconocimiento facial en GPU (%s)", self._ort.providers[0])
+                    return
+                except Exception as e:
+                    log.warning("No se pudo usar la GPU (%s) para las caras (%s): se usa la CPU", self.device, e)
+                    self.device = "cpu"
             self._det = cv2.FaceDetectorYN.create(str(self.models_dir / MODELS["det"][0]), "", (320, 320), 0.8, 0.3, 5000)
             self._rec = cv2.FaceRecognizerSF.create(str(self.models_dir / MODELS["rec"][0]), "")
+
+    def _detect(self, bgr):
+        if self._ort is not None:
+            return self._ort.detect(bgr)
+        h, w = bgr.shape[:2]
+        self._det.setInputSize((w, h))
+        _, faces = self._det.detect(bgr)
+        return faces if faces is not None else []
+
+    def _embed(self, bgr, f):
+        if self._ort is not None:
+            return self._ort.embed(bgr, f)
+        return self._rec.feature(self._rec.alignCrop(bgr, f))
 
     def index(self, path):
         """Devuelve [(bbox [x0,y0,x1,y1] en px de la imagen tal como se ve, puntuación, vector float32 normalizado)]."""
@@ -88,15 +207,14 @@ class FaceEngine:
             im = im.resize((int(im.width * s), int(im.height * s)), Image.LANCZOS)
         bgr = np.ascontiguousarray(np.asarray(im)[:, :, ::-1])
         h, w = bgr.shape[:2]
-        self._det.setInputSize((w, h))
-        _, faces = self._det.detect(bgr)
+        faces = self._detect(bgr)
         out = []
         k = W / w  # factor a coordenadas de la imagen original
-        for f in (faces if faces is not None else []):
+        for f in faces:
             x, y, fw, fh = f[:4]
             if min(fw, fh) < MIN_FACE_PX:
                 continue
-            emb = self._rec.feature(self._rec.alignCrop(bgr, f)).astype(np.float32).ravel()
+            emb = np.asarray(self._embed(bgr, f), dtype=np.float32).ravel()
             emb /= (np.linalg.norm(emb) or 1.0)
             bbox = [int(max(0, x) * k), int(max(0, y) * k), int(min(w, x + fw) * k), int(min(h, y + fh) * k)]
             out.append((bbox, float(f[-1]), emb))

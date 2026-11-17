@@ -1,9 +1,11 @@
 """Selección del dispositivo de cálculo (CPU o GPU) para el OCR de dorsales y el reconocimiento facial.
 
 Se controla con variables de entorno, sin tocar código:
-  RACEFINDER_DEVICE  auto (por defecto) | cpu | cuda | dml   -> OCR de dorsales (ONNX Runtime)
+  RACEFINDER_DEVICE       auto (por defecto) | cpu | cuda | dml   -> OCR de dorsales (ONNX Runtime)
+  RACEFINDER_FACE_DEVICE  auto (por defecto, sigue a RACEFINDER_DEVICE) | cpu | cuda | dml   -> caras
 
-Las caras (OpenCV 5 DNN) siguen en CPU: probado, su objetivo OpenCL se ignora y no da ninguna ganancia.
+Caras en 'cpu' = OpenCV DNN, exactamente como siempre. En GPU se ejecutan los mismos modelos con ONNX Runtime
+(OpenCV 5 ignora la GPU: se probó OpenCL y no da ninguna ganancia).
 
 'auto' usa la GPU solo si el paquete de ONNX Runtime instalado la ofrece (onnxruntime-gpu u onnxruntime-directml);
 con el onnxruntime normal (solo CPU) todo funciona exactamente igual que antes. Si se pide una GPU que no está
@@ -80,3 +82,9 @@ def session_providers(ocr):
         return list(ocr.text_det.infer.session.get_providers())
     except Exception:
         return []
+
+
+def resolve_face_device(requested=None):
+    """cpu (OpenCV DNN) | cuda | dml (ONNX Runtime). En auto sigue al dispositivo del OCR."""
+    req = (requested or _env("RACEFINDER_FACE_DEVICE", OCR_DEVICES)).lower()
+    return resolve_ocr_device(None if req == "auto" else req)

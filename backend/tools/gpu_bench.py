@@ -1,12 +1,12 @@
 """Compara CPU y GPU en tus fotos: tiempo por foto del OCR de dorsales y si da los mismos resultados.
 
 Uso (desde backend/, con el entorno virtual activo):
-    python tools/gpu_bench.py CARPETA_O_FOTOS... [--n 30] [--device cuda|dml|auto]
+    python tools/gpu_bench.py CARPETA_O_FOTOS... [--n 30] [--device cuda|dml|auto] [--no-faces]
 
 Qué mide:
   - OCR de dorsales en CPU y en la GPU pedida (mismas fotos, tras un calentamiento que no cuenta).
   - Que la GPU da lo mismo: mismos dorsales leídos que en CPU.
-(Las caras siguen en CPU: OpenCV 5 ignora la GPU con sus modelos.)
+  - Caras (YuNet + SFace): OpenCV en CPU frente a ONNX Runtime en GPU, y que den las mismas caras y vectores.
 Si la GPU no se activa de verdad, lo dice (ONNX Runtime vuelve a CPU en silencio si faltan librerías).
 """
 import argparse
@@ -18,7 +18,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.bibs import BibReader
+import numpy as np
+
 from app.device import onnx_providers, resolve_ocr_device
+from app.faces import FaceEngine
 
 EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
@@ -45,6 +48,7 @@ def main():
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--n", type=int, default=30, help="número máximo de fotos (repartidas por la carpeta)")
     ap.add_argument("--device", default="auto", choices=["auto", "cuda", "dml"])
+    ap.add_argument("--no-faces", action="store_true")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
@@ -68,6 +72,25 @@ def main():
         print(f"OCR   GPU ({gpu_dev:4s}) {t_gpu:6.2f} s/foto   x{t_cpu / t_gpu:.2f} más rápido")
         print(f"      mismos dorsales en CPU y GPU: {same}/{len(files)} fotos "
               f"({sum(len(c) for c in res_cpu)} lecturas CPU, {sum(len(g) for g in res_gpu)} GPU)")
+
+    if a.no_faces:
+        return
+    fcpu, fgpu = FaceEngine(device="cpu"), FaceEngine(device=gpu_dev)
+    for e in (fcpu, fgpu):
+        e.index(files[0])  # calentamiento y carga de modelos
+    f_cpu, t_cpu = timed(fcpu.index, files)
+    print()
+    print(f"Caras CPU (OpenCV) {t_cpu:6.2f} s/foto   ({sum(len(x) for x in f_cpu)} caras)")
+    if fgpu.device == "cpu":
+        print("Caras GPU          NO ACTIVA (ver avisos)")
+        return
+    f_gpu, t_gpu = timed(fgpu.index, files)
+    print(f"Caras GPU ({fgpu.device:4s})   {t_gpu:6.2f} s/foto   x{t_cpu / t_gpu:.2f} más rápido   ({sum(len(x) for x in f_gpu)} caras)")
+    same = sum(len(c) == len(g) for c, g in zip(f_cpu, f_gpu))
+    sims = [max(float(ec @ eg) for _, _, eg in g) for c, g in zip(f_cpu, f_gpu) if g for _, _, ec in c]
+    print(f"      mismo número de caras en CPU y GPU: {same}/{len(files)} fotos")
+    if sims:
+        print(f"      coseno CPU vs GPU de las mismas caras: mín {min(sims):.4f} · media {np.mean(sims):.4f} (debería ser ≈ 1,0)")
 
 
 if __name__ == "__main__":
