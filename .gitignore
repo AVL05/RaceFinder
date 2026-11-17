@@ -1,0 +1,13 @@
+backend/.venv/
+data/
+node_modules/
+frontend/dist/
+__pycache__/
+.pytest_cache/
+data_bench/
+backend/models/
+data_eval/
+
+frontend/e2e/.fixtures/
+frontend/e2e-results/
+frontend/test-results/

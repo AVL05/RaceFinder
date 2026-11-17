@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", "Inter", system-ui, -apple-system, sans-serif;
+  --color-ink-950: #0b0b0d;
+  --color-ink-900: #141418;
+  --color-ink-800: #1c1c22;
+  --color-ink-700: #2a2a32;
+  --color-ink-500: #75757f;
+  --color-ink-300: #ababb5;
+  --color-ink-100: #ececf1;
+  --color-accent: #ff6a3d;
+}
+
+html { color-scheme: dark; -webkit-text-size-adjust: 100%; }
+html, body, #root { min-height: 100%; }
+body {
+  margin: 0;
+  background: var(--color-ink-950);
+  color: var(--color-ink-100);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: color-mix(in srgb, var(--color-accent) 40%, transparent); }
+button { cursor: pointer; }
+button:disabled { cursor: default; }
+input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+* { scrollbar-width: thin; scrollbar-color: var(--color-ink-700) transparent; }
+
+@keyframes rf-fade { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
+.rf-fade { animation: rf-fade .22s ease-out both; }
+@keyframes rf-shimmer { 0% { background-position: -200% 0 } 100% { background-position: 200% 0 } }
+.rf-skeleton {
+  background: linear-gradient(90deg, var(--color-ink-800) 25%, var(--color-ink-700) 50%, var(--color-ink-800) 75%);
+  background-size: 200% 100%; animation: rf-shimmer 1.4s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rf-fade, .rf-skeleton { animation: none }
+  * { transition-duration: 0s !important; }
+}
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }

@@ -1,0 +1,17 @@
+{
+  "name": "racefinder",
+  "private": true,
+  "version": "0.2.0",
+  "description": "Encuentra tus fotos de carreras por dorsal, en local.",
+  "type": "module",
+  "packageManager": "pnpm@12.16.1",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "start": "node scripts/dev.mjs --prod",
+    "build": "pnpm --dir frontend build",
+    "test": "cd backend && .venv\\Scripts\\python.exe -m pytest -q"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
