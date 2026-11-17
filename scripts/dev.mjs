@@ -58,6 +58,42 @@ function ensurePython() {
     log('Instalando dependencias de Python (solo cuando cambian)…')
     run(VENV_PY, ['-m', 'pip', 'install', '--disable-pip-version-check', '-q', '-r', req])
     fs.writeFileSync(stamp, hash)
+    fs.rmSync(GPU_STAMP, { force: true }) // pip ha vuelto a poner el onnxruntime de CPU: hay que repetir el cambio a GPU
+  }
+}
+
+// GPU automática: si hay una NVIDIA, cambia el onnxruntime de CPU por el de GPU (dorsales x2 más rápidos y caras algo más).
+// Solo se hace una vez y sin tocar nada fuera de backend/.venv. Desactivar con RACEFINDER_GPU=0; si falla, sigue en CPU.
+const GPU_STAMP = path.join(BACKEND, '.venv', '.racefinder-gpu')
+function detectGpuRequirements() {
+  if (['0', 'no', 'off', 'cpu'].includes((process.env.RACEFINDER_GPU || '').toLowerCase())) return null
+  const r = spawnSync('nvidia-smi', [], { encoding: 'utf-8', shell: false })
+  if (r.status !== 0 || !r.stdout) return null
+  const cuda = Number(/CUDA (?:UMD )?Version:\s*(\d+)/.exec(r.stdout)?.[1] || 0)
+  // onnxruntime-gpu actual exige CUDA 13 (driver 580+). Con un driver antiguo, DirectML funciona en Windows sin CUDA.
+  if (cuda >= 13) return { file: 'requirements-gpu.txt', name: 'NVIDIA CUDA' }
+  if (isWin) return { file: 'requirements-dml.txt', name: 'DirectML (tu driver NVIDIA no llega a CUDA 13: actualízalo para ir más rápido)' }
+  return null
+}
+
+function ensureGpu() {
+  const want = detectGpuRequirements()
+  if (!want) return
+  const reqFile = path.join(BACKEND, want.file)
+  const hash = createHash('sha256').update(fs.readFileSync(reqFile)).digest('hex')
+  const prev = fs.existsSync(GPU_STAMP) ? fs.readFileSync(GPU_STAMP, 'utf-8') : ''
+  if (prev === hash) return
+  if (prev === `failed-${hash}`) { log(`${c.yellow}La GPU no se pudo instalar la última vez; se usa la CPU. Bórrala con: del backend\\.venv\\.racefinder-gpu para reintentar.${c.reset}`); return }
+  log(`GPU detectada: instalando ONNX Runtime para ${want.name} (descarga de unos GB, solo la primera vez)…`)
+  const pip = (args) => spawnSync(VENV_PY, ['-m', 'pip', '--disable-pip-version-check', ...args], { stdio: 'inherit' }).status === 0
+  pip(['uninstall', '-y', 'onnxruntime', 'onnxruntime-gpu', 'onnxruntime-directml', '-q'])
+  if (pip(['install', '-q', '-r', reqFile])) {
+    fs.writeFileSync(GPU_STAMP, hash)
+    log(`${c.green}GPU lista.${c.reset}`)
+  } else {
+    log(`${c.yellow}No se pudo instalar la GPU; se continúa con la CPU (todo funciona igual, más lento).${c.reset}`)
+    pip(['install', '-q', '-r', path.join(BACKEND, 'requirements.txt')])
+    fs.writeFileSync(GPU_STAMP, `failed-${hash}`)
   }
 }
 
@@ -140,6 +176,7 @@ process.on('SIGTERM', () => stop(0))
 
 // ---------------------------------------------------------------------------
 ensurePython()
+ensureGpu()
 ensureNode()
 
 const apiPort = await freePort(Number(process.env.RACEFINDER_API_PORT_START) || 8000)

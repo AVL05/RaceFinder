@@ -1,0 +1,5 @@
+# GPU con DirectML (Windows, cualquier GPU con DirectX 12). Lo usa scripts/dev.mjs solo si tu driver NVIDIA
+# no llega a CUDA 13; con CUDA 13 es mejor requirements-gpu.txt. Manual:
+#   backend\.venv\Scripts\python.exe -m pip uninstall -y onnxruntime onnxruntime-gpu
+#   backend\.venv\Scripts\python.exe -m pip install -r backend\requirements-dml.txt
+onnxruntime-directml==1.24.4

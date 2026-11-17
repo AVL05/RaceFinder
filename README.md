@@ -90,11 +90,14 @@ La biblioteca (`data/`) no está en el repositorio: se crea vacía en cada equip
 
 | Variable | Por defecto | Para qué |
 |---|---|---|
-| `RACEFINDER_WORKERS` | 3 | Fotos analizadas a la vez (dorsales y caras). En una máquina de 16 núcleos, 3 rinde ≈1,3-1,5× lo que 1; con más núcleos prueba 4-6 y mide (máximo 16). |
+| `RACEFINDER_WORKERS` | automático | Fotos analizadas a la vez (dorsales y caras). Por defecto se calcula según tus núcleos, tu RAM y si hay GPU (portátil de 16 hilos y 16 GB con GPU: 5; solo CPU: 2-3). Forzar un número (máx. 16) solo si mides que mejora; demasiados saturan CPU y RAM. |
+| `RACEFINDER_PRIORITY` | `low` | El análisis corre con prioridad algo menor para que el equipo siga ágil mientras trabaja. `normal` lo desactiva. |
 | `RACEFINDER_IMPORT_THREADS` | 6 | Hilos de la importación de carpetas. |
 | `RACEFINDER_DATA` | `./data` | Dónde se guarda la biblioteca. Si la carpeta de fotos está en otro disco, los enlaces duros no son posibles y se copia. |
 
-### GPU para leer dorsales (opcional)
+### GPU para leer dorsales (automática)
+
+`pnpm run dev` detecta una GPU NVIDIA (con `nvidia-smi`) y, la primera vez, cambia en `backend/.venv` el `onnxruntime` de CPU por el de GPU (descarga de unos GB; no instala nada fuera del proyecto). Con driver CUDA 13 usa `requirements-gpu.txt`; con un driver NVIDIA más antiguo, en Windows usa DirectML (`requirements-dml.txt`). Si falla, sigue en CPU. Desactivar con `RACEFINDER_GPU=0`. Lo que sigue es la instalación manual y los detalles.
 
 El OCR de dorsales y el reconocimiento facial pueden ir en la GPU (las caras ejecutan los mismos modelos con ONNX Runtime, porque OpenCV 5 ignora la GPU; en CPU siguen usando OpenCV como siempre). Con el `onnxruntime` normal todo va en CPU como siempre. Para activarla, desde la raíz del repositorio (medido en una RTX 5060 Ti: OCR ×2,1 más rápido):
 
@@ -104,7 +107,7 @@ backend\.venv\Scripts\python.exe -m pip install -r backend\requirements-gpu.txt 
 backend\.venv\Scripts\python.exe backend\tools\gpu_bench.py "RUTA_A_TUS_FOTOS"   # compara CPU y GPU y comprueba que da los mismos dorsales
 ```
 
-`RACEFINDER_DEVICE=auto|cpu|cuda|dml` (por defecto `auto`: GPU si está disponible); `RACEFINDER_FACE_DEVICE` hace lo mismo solo para las caras (por defecto sigue a la anterior). `/api/health` muestra `ocr_device` y `face_device`. Si la GPU no se puede cargar (faltan CUDA/cuDNN) se avisa en el registro y se usa la CPU. Con GPU, prueba `RACEFINDER_WORKERS` 6-12 y mide.
+`RACEFINDER_DEVICE=auto|cpu|cuda|dml` (por defecto `auto`: GPU si está disponible); `RACEFINDER_FACE_DEVICE` hace lo mismo solo para las caras (por defecto sigue a la anterior). `/api/health` muestra `ocr_device` y `face_device`. Si la GPU no se puede cargar (faltan CUDA/cuDNN) se avisa en el registro y se usa la CPU. `/api/health` también muestra `workers`.
 
 `RACEFINDER_FAST_RESIZE=1` reduce las fotos con `cv2.resize` en vez de PIL Lanczos (3-9× más rápido en esa fase, que con GPU pasa a ser lo que más pesa). Cambia ligeramente los píxeles y puede mover alguna lectura límite, por eso está apagado por defecto: `gpu_bench.py` compara dorsales y caras con y sin él sobre tus fotos para que decidas.
 

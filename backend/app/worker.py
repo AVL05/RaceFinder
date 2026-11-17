@@ -13,14 +13,13 @@ import traceback
 
 from .bibs import BibReader
 from .faces import FaceEngine, ensure_models, models_ready, to_blob
+from .hardware import MAX_WORKERS, auto_workers, lower_priority
 from .imaging import original_path, make_preview
 
 MAX_ATTEMPTS = 3
-# Varias fotos a la vez: ONNX ya reparte cada inferencia entre núcleos, pero decodificar y preparar la imagen
-# es de un solo hilo y deja la CPU ociosa. Medido con fotos reales de 20 MP (mismas detecciones): 3 hilos
-# ≈ 1,3-1,5× más rápido que 1; con 6 ya no mejora. Cambiar con RACEFINDER_WORKERS.
-DEFAULT_WORKERS = 3
-MAX_WORKERS = 16  # tope de seguridad: con GPU y muchos núcleos más de 8 puede seguir ayudando (mide)
+# Varias fotos a la vez: decodificar y preparar la imagen es de un solo hilo y deja la CPU ociosa mientras ONNX
+# o la GPU esperan. El número se ajusta solo a la máquina (núcleos, RAM y GPU: ver hardware.auto_workers);
+# se puede forzar con RACEFINDER_WORKERS (máx. 16).
 
 
 class Worker:
@@ -33,7 +32,13 @@ class Worker:
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._paused = threading.Event()
-        self.n_workers = max(1, min(MAX_WORKERS, int(n_workers or os.environ.get("RACEFINDER_WORKERS", DEFAULT_WORKERS))))
+        forced = n_workers or os.environ.get("RACEFINDER_WORKERS")
+        try:
+            forced = int(forced) if forced else None
+        except ValueError:
+            forced = None
+        self.workers_auto = not forced
+        self.n_workers = max(1, min(MAX_WORKERS, forced or auto_workers(getattr(self.reader, "device", "cpu"))))
         self.threads = []
         self._lock = threading.Lock()    # reclamar una foto y registrarla como activa es una sola operación
         self._active = set()
@@ -51,6 +56,7 @@ class Worker:
         return self.threads[0] if self.threads else None
 
     def start(self):
+        lower_priority()
         c = self.db.conn()
         c.execute("UPDATE photos SET ocr_status='pending' WHERE ocr_status='processing'")
         c.execute("UPDATE photos SET face_status='pending' WHERE face_status='processing'")
