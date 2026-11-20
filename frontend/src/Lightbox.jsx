@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { X, ChevronLeft, ChevronRight, Download, Trash2, Check, Ban, Plus, ZoomIn, ZoomOut, ScanLine, Circle, CheckCircle2, RotateCw, Loader2 } from 'lucide-react'
+import { X, ChevronLeft, ChevronRight, Download, Trash2, Check, Ban, Plus, ZoomIn, ZoomOut, ScanLine, Circle, CheckCircle2, RotateCw, Loader2, Star } from 'lucide-react'
 import { api } from './api.js'
 import { useToast } from './Toast.jsx'
 import RetryImg from './RetryImg.jsx'
 
 const fmtSize = (b) => (b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.round(b / 1e3)} KB`)
 
-export default function Lightbox({ photos, id, onClose, onNavigate, selected, onToggleSelect, onChanged, onDelete }) {
+export default function Lightbox({ photos, id, album, onClose, onNavigate, selected, onToggleSelect, onToggleFavorite, onChanged, onDelete }) {
   const toast = useToast()
   const idx = photos.findIndex((p) => p.id === id)
   const base = photos[idx]
@@ -27,7 +27,7 @@ export default function Lightbox({ photos, id, onClose, onNavigate, selected, on
   const bibs = (detail?.id === id ? detail.bibs : null) ?? base?.bibs ?? (base?.evidence ?? []).map((e) => ({ ...e, id: e.bib_id }))
   const isSel = selected.has(id)
 
-  const loadDetail = useCallback(async () => { try { setDetail(await api.photo(id)) } catch { /* se muestra lo que ya hay */ } }, [id])
+  const loadDetail = useCallback(async () => { try { setDetail(await api.photo(id, album)) } catch { /* se muestra lo que ya hay */ } }, [id, album])
   useEffect(() => { setZoom(false); setLoaded(false); setManual(''); loadDetail() }, [id, loadDetail])
   useEffect(() => { if (!zoom) setZoomLoaded(false) }, [zoom])
 
@@ -49,18 +49,19 @@ export default function Lightbox({ photos, id, onClose, onNavigate, selected, on
   useEffect(() => {
     const k = (e) => {
       if (e.key === 'Tab' && root.current) {
-        const f = [...root.current.querySelectorAll('button:not([disabled]), a[href], input')]
+        const f = [...root.current.querySelectorAll('button:not([disabled]), a[href], input')].filter((el) => el.getClientRects().length)
         if (!f.length) return
-        if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus() }
+        if (e.shiftKey && (document.activeElement === f[0] || document.activeElement === root.current)) { e.preventDefault(); f[f.length - 1].focus() }
         else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus() }
         return
       }
-      if (e.target.tagName === 'INPUT') { if (e.key === 'Escape') e.target.blur(); return }
+      if (e.target.tagName === 'INPUT') { if (e.key === 'Escape') root.current?.focus(); return }
+      if (e.ctrlKey || e.metaKey || e.altKey) return
       if (e.key === 'Escape') { if (zoom) setZoom(false); else onClose() }
       else if (e.key === 'ArrowLeft' && prev) onNavigate(prev.id)
       else if (e.key === 'ArrowRight' && next) onNavigate(next.id)
       else if (e.key.toLowerCase() === 's') onToggleSelect(base)
-      else if (e.key.toLowerCase() === 'z' || e.key === ' ') { e.preventDefault(); setZoom((z) => !z) }
+      else if (e.key.toLowerCase() === 'z' || (e.key === ' ' && e.target === root.current)) { e.preventDefault(); setZoom((z) => !z) }
       else if (e.key.toLowerCase() === 'b') setBoxes((b) => !b)
       else if (e.key.toLowerCase() === 'd') window.location.assign(api.downloadUrl(base))
     }
@@ -84,17 +85,20 @@ export default function Lightbox({ photos, id, onClose, onNavigate, selected, on
   return (
     <div ref={root} tabIndex={-1} className="fixed inset-0 z-50 flex flex-col bg-black outline-none rf-fade" role="dialog" aria-modal="true" aria-label={`Foto ${photo.name}`}>
       {/* barra superior */}
-      <div className="flex items-center gap-2 px-3 py-2.5 text-sm sm:px-4">
-        <div className="min-w-0 flex-1">
+      <div className="rf-viewer-header">
+        <div className="rf-viewer-title">
           <div className="truncate font-medium">{photo.name}</div>
           <div className="text-xs text-ink-500">{idx + 1} de {photos.length} · {photo.width}×{photo.height} · {fmtSize(photo.size || 0)}</div>
         </div>
         <IconBtn onClick={() => onToggleSelect(base)} label={isSel ? 'Quitar de la selección (S)' : 'Seleccionar (S)'} active={isSel}>
           {isSel ? <CheckCircle2 size={18} /> : <Circle size={18} />}
         </IconBtn>
-        <IconBtn onClick={() => setBoxes(!boxes)} label={boxes ? 'Ocultar marcas de dorsal (B)' : 'Mostrar marcas de dorsal (B)'} active={boxes} className="hidden sm:grid"><ScanLine size={18} /></IconBtn>
-        <IconBtn onClick={() => setZoom(!zoom)} label={zoom ? 'Ajustar a la pantalla (Z)' : 'Ver a tamaño real (Z)'} className="hidden sm:grid">{zoom ? <ZoomOut size={18} /> : <ZoomIn size={18} />}</IconBtn>
-        <a href={api.downloadUrl(base)} download={photo.name} className="flex h-9 items-center gap-2 rounded-lg bg-white/10 px-3 hover:bg-white/15" title="Descargar original (D)">
+        <IconBtn onClick={() => setBoxes(!boxes)} label={boxes ? 'Ocultar marcas de dorsal (B)' : 'Mostrar marcas de dorsal (B)'} active={boxes}><ScanLine size={18} /></IconBtn>
+        <IconBtn onClick={() => setZoom(!zoom)} label={zoom ? 'Ajustar a la pantalla (Z)' : 'Ver a tamaño real (Z)'}>{zoom ? <ZoomOut size={18} /> : <ZoomIn size={18} />}</IconBtn>
+        <IconBtn onClick={() => onToggleFavorite(base)} label={base.favorite ? 'Quitar de favoritas' : 'Marcar como favorita'} active={Boolean(base.favorite)}>
+          <Star size={18} className={base.favorite ? 'fill-current' : ''} aria-hidden />
+        </IconBtn>
+        <a href={api.downloadUrl(base)} download={photo.name} className="rf-button rf-button-quiet min-w-11" aria-label="Descargar original" title="Descargar original (D)">
           <Download size={16} aria-hidden /><span className="hidden sm:inline">Original</span>
         </a>
         <IconBtn onClick={() => window.confirm('¿Quitar esta foto de RaceFinder? Tu archivo original en el disco no se toca.') && onDelete(id)} label="Quitar de RaceFinder" className="hover:text-red-300"><Trash2 size={17} /></IconBtn>
@@ -102,7 +106,7 @@ export default function Lightbox({ photos, id, onClose, onNavigate, selected, on
       </div>
 
       {/* imagen */}
-      <div className="relative flex min-h-0 flex-1 items-center justify-center"
+      <div className="rf-viewer-image relative flex min-h-0 flex-1 items-center justify-center"
         onTouchStart={(e) => { touch.current = e.touches[0].clientX }}
         onTouchEnd={(e) => {
           if (zoom || touch.current === null) return
@@ -129,7 +133,7 @@ export default function Lightbox({ photos, id, onClose, onNavigate, selected, on
             <div className="relative max-h-full max-w-full">
               <RetryImg key={id} src={api.previewUrl(base)} alt={photo.name} onLoad={() => setLoaded(true)} draggable={false}
                 onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); zoomAt.current = [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; setZoom(true) }}
-                className={`block max-h-[calc(100dvh-14rem)] max-w-[100vw] cursor-zoom-in select-none object-contain transition-opacity duration-200 sm:max-w-[calc(100vw-8rem)] ${loaded ? 'opacity-100' : 'opacity-0'}`} />
+                className={`rf-viewer-preview block max-w-[100vw] cursor-zoom-in select-none object-contain transition-opacity duration-200 sm:max-w-[calc(100vw-8rem)] ${loaded ? 'opacity-100' : 'opacity-0'}`} />
               {loaded && boxes && base.face?.bbox && (() => {
                 const f = base.face.bbox
                 return (
@@ -153,7 +157,7 @@ export default function Lightbox({ photos, id, onClose, onNavigate, selected, on
       </div>
 
       {/* dorsales */}
-      <div className="border-t border-white/10 bg-ink-950/80 px-3 py-3 sm:px-4">
+      <div className="rf-viewer-footer border-t border-white/10 bg-ink-950 px-3 py-3 sm:px-4">
         <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-2 text-sm">
           <span className="mr-1 text-ink-500">Dorsales:</span>
           {photo.ocr_status === 'pending' || photo.ocr_status === 'processing' ? <span className="flex items-center gap-1 text-ink-300"><Loader2 size={13} className="animate-spin" aria-hidden /> leyendo…</span> : null}
@@ -172,10 +176,10 @@ export default function Lightbox({ photos, id, onClose, onNavigate, selected, on
               </span>
             )
           })}
-          <form className="ml-auto flex items-center gap-1.5" onSubmit={(e) => { e.preventDefault(); addManual() }}>
-            <input value={manual} onChange={(e) => setManual(e.target.value.replace(/\D/g, '').slice(0, 5))} inputMode="numeric"
-              aria-label="Añadir un dorsal que falta" placeholder="¿Falta alguno?" className="w-32 rounded-lg border border-white/10 bg-ink-900 px-2.5 py-1.5 text-sm placeholder:text-ink-500 focus:border-accent/60 focus:outline-none" />
-            <button disabled={!manual} className="rounded-lg border border-white/10 p-2 hover:bg-white/5 disabled:opacity-40" aria-label="Añadir dorsal"><Plus size={14} /></button>
+          <form className="flex w-full items-center gap-1.5 sm:ml-auto sm:w-auto" onSubmit={(e) => { e.preventDefault(); addManual() }}>
+            <input name="dorsal" value={manual} onChange={(e) => setManual(e.target.value.replace(/\D/g, '').slice(0, 5))} inputMode="numeric" autoComplete="off"
+              aria-label="Añadir un dorsal que falta" placeholder="Añadir dorsal" className="min-h-11 w-full min-w-0 rounded-lg border border-white/10 bg-ink-900 px-2.5 py-1.5 text-sm placeholder:text-ink-500 sm:w-36" />
+            <button disabled={!manual} className="rf-button rf-button-quiet min-w-11" aria-label="Añadir dorsal"><Plus size={17} aria-hidden /></button>
           </form>
         </div>
         <p className="mx-auto mt-2 hidden max-w-5xl text-[11px] text-ink-500 lg:block">← → navegar · S seleccionar · Z o clic ampliar · B marcas · D descargar · Esc cerrar</p>
@@ -186,12 +190,12 @@ export default function Lightbox({ photos, id, onClose, onNavigate, selected, on
 
 const IconBtn = ({ onClick, label, children, active, className = '' }) => (
   <button onClick={onClick} aria-label={label} title={label} aria-pressed={active}
-    className={`grid h-9 w-9 place-items-center rounded-lg hover:bg-white/10 ${active ? 'text-accent' : 'text-ink-100'} ${className}`}>{children}</button>
+    className={`grid size-11 place-items-center rounded-lg hover:bg-white/10 ${active ? 'text-accent' : 'text-ink-100'} ${className}`}>{children}</button>
 )
 
 const NavBtn = ({ side, onClick }) => (
   <button onClick={onClick} aria-label={side === 'left' ? 'Foto anterior' : 'Foto siguiente'}
-    className={`absolute top-1/2 hidden -translate-y-1/2 rounded-full bg-black/50 p-3 backdrop-blur hover:bg-black/80 sm:block ${side === 'left' ? 'left-3' : 'right-3'}`}>
+    className={`absolute top-1/2 grid size-11 -translate-y-1/2 place-items-center rounded-full border border-white/30 bg-black/70 hover:bg-black ${side === 'left' ? 'left-2 sm:left-3' : 'right-2 sm:right-3'}`}>
     {side === 'left' ? <ChevronLeft size={22} /> : <ChevronRight size={22} />}
   </button>
 )

@@ -33,12 +33,12 @@ const VITE = path.join(FRONTEND, 'node_modules', 'vite', 'bin', 'vite.js')
 function findSystemPython() {
   const local = process.env.LOCALAPPDATA || ''
   const candidates = [
-    ...['313', '312', '311'].map((v) => [path.join(local, 'Programs', 'Python', `Python${v}`, 'python.exe'), []]),
+    ...['313', '312'].map((v) => [path.join(local, 'Programs', 'Python', `Python${v}`, 'python.exe'), []]),
     ['py', ['-3.12']], ['py', ['-3']], ['python3', []], ['python', []],
   ]
   for (const [cmd, pre] of candidates) {
     if (path.isAbsolute(cmd) && !fs.existsSync(cmd)) continue
-    const r = spawnSync(cmd, [...pre, '-c', 'import sys;print(sys.version_info[:2]>=(3,10), sys.executable)'], { encoding: 'utf-8', shell: false })
+    const r = spawnSync(cmd, [...pre, '-c', 'import sys;print(sys.version_info[:2]>=(3,12), sys.executable)'], { encoding: 'utf-8', shell: false })
     if (r.status === 0 && r.stdout.startsWith('True') && !r.stdout.includes('WindowsApps')) return [cmd, pre]
   }
   return null
@@ -47,7 +47,7 @@ function findSystemPython() {
 function ensurePython() {
   if (!fs.existsSync(VENV_PY)) {
     const py = findSystemPython()
-    if (!py) fail('No encuentro Python 3.10+. Instálalo con:  winget install Python.Python.3.12 --scope user')
+    if (!py) fail('No encuentro Python 3.12 o posterior. Instala Python 3.12 con winget install Python.Python.3.12 --scope user')
     log('Creando entorno Python (solo la primera vez)…')
     run(py[0], [...py[1], '-m', 'venv', path.join(BACKEND, '.venv')])
   }

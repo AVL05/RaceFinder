@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Search, Upload, FolderOpen, X, Loader2, Pause, Play, ArrowLeft, Check, AlertTriangle, RefreshCw } from 'lucide-react'
+import { Search, Upload, FolderOpen, X, Loader2, Pause, Play, ArrowLeft, Check, AlertTriangle, RefreshCw, ScanLine } from 'lucide-react'
 import { api, uploadInBatches, filesFromDrop, ALLOWED } from './api.js'
 import Library from './Library.jsx'
+import AlbumControls from './AlbumControls.jsx'
 import SettingsPanel from './SettingsPanel.jsx'
 import EvalView from './EvalView.jsx'
 import { ToastProvider, useToast } from './Toast.jsx'
 
 const readUrl = () => {
   const p = new URLSearchParams(location.search)
-  return { q: (p.get('dorsal') || '').replace(/\D/g, '').slice(0, 5), similar: p.get('parecidos') === '1' }
+  const album = Number(p.get('album'))
+  return {
+    q: (p.get('dorsal') || '').replace(/\D/g, '').slice(0, 5),
+    similar: p.get('parecidos') === '1',
+    album: Number.isSafeInteger(album) && album > 0 ? album : null,
+  }
 }
 
 export default function App() {
@@ -19,28 +25,34 @@ function Shell() {
   const toast = useToast()
   const [view, setView] = useState('library')
   const [stats, setStats] = useState(null)
+  const [albums, setAlbums] = useState(null)
   const [offline, setOffline] = useState(false)
   const [version, setVersion] = useState(0) // sube cuando cambia el índice: la galería se recarga
-  const [{ q, similar }, setSearch] = useState(readUrl)
+  const [{ q, similar, album }, setSearch] = useState(readUrl)
   const [draft, setDraft] = useState(q)
   const [upload, setUpload] = useState(null)
   const [drag, setDrag] = useState(0)
   const fileRef = useRef(null)
   const dirRef = useRef(null)
+  const fileAlbum = useRef(undefined)
+  const dirAlbum = useRef(null)
   const searchRef = useRef(null)
   const lastKey = useRef('')
   const lastBump = useRef(0)
   const lastPhotos = useRef(-1)
   const rate = useRef([])
+  const currentAlbum = albums?.find((item) => item.id === album)
 
   // ---------- estado del servidor ----------
   const refresh = useCallback(async () => {
     try {
-      const s = await api.stats()
+      const [s, catalog] = await Promise.all([api.stats(), api.albums()])
       setStats(s); setOffline(false)
+      setAlbums(catalog.albums ?? [])
       // durante un análisis largo (miles de fotos) se recarga la galería como mucho cada 10 s;
       // los cambios de verdad (fotos añadidas o quitadas, fin del análisis) se reflejan al momento
-      const key = `${s.photos}|${s.ocr.done || 0}|${s.ocr.error || 0}|${s.with_bib}|${s.faces?.status?.done || 0}`
+      const albumKey = (catalog.albums ?? []).map(({ id, photos, min_number, max_number }) => `${id}:${photos}:${min_number}:${max_number}`).join(',')
+      const key = `${s.photos}|${s.ocr.done || 0}|${s.ocr.error || 0}|${s.with_bib}|${s.favorites}|${s.needs_review}|${s.faces?.status?.done || 0}|${albumKey}`
       const busyNow = (s.ocr.pending || 0) + (s.ocr.processing || 0) + (s.faces?.enabled ? (s.faces.status?.pending || 0) + (s.faces.status?.processing || 0) : 0) > 0
       const urgent = s.photos !== lastPhotos.current || !busyNow
       if (key !== lastKey.current && (urgent || Date.now() - lastBump.current > 10_000)) {
@@ -50,6 +62,10 @@ function Shell() {
       rate.current = [...rate.current.filter((r) => now - r.t < 60_000), { t: now, done: s.ocr.done || 0 }]
     } catch { setOffline(true) }
   }, [])
+  const refreshLibrary = useCallback(async () => {
+    await refresh()
+    setVersion((v) => v + 1)
+  }, [refresh])
   useEffect(() => { refresh() }, [refresh])
   const ocrPending = (stats?.ocr?.pending || 0) + (stats?.ocr?.processing || 0)
   const facePending = stats?.faces?.enabled ? (stats.faces.status?.pending || 0) + (stats.faces.status?.processing || 0) : 0
@@ -69,43 +85,60 @@ function Shell() {
     const p = new URLSearchParams()
     if (q) p.set('dorsal', q)
     if (similar) p.set('parecidos', '1')
+    if (album) p.set('album', album)
     const url = p.toString() ? `?${p}` : location.pathname
     if (url !== location.search) history.replaceState(null, '', url)
-  }, [q, similar])
+  }, [q, similar, album])
   useEffect(() => {
     const onPop = () => { const u = readUrl(); setSearch(u); setDraft(u.q) }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
   const searchFor = useCallback((n) => { setDraft(n); setSearch((s) => ({ ...s, q: n })); setView('library'); window.scrollTo({ top: 0 }) }, [])
+  const selectAlbum = (id, clearSearch = false) => {
+    if (clearSearch) setDraft('')
+    setSearch((s) => ({ ...s, album: id, q: clearSearch ? '' : s.q }))
+    window.scrollTo({ top: 0 })
+  }
+  useEffect(() => {
+    if (!album || !albums || currentAlbum) return
+    setDraft('')
+    setSearch((s) => s.album === album ? { ...s, album: null, q: '' } : s)
+    toast('El álbum de este enlace ya no está disponible', 'warn')
+  }, [album, albums, currentAlbum, toast])
 
   // atajo "/" para buscar
   useEffect(() => {
     const k = (e) => {
-      if (e.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) { e.preventDefault(); searchRef.current?.focus() }
+      if (e.key === '/' && searchRef.current && !e.target.closest?.('input, textarea, select, [contenteditable], dialog, [role="dialog"]')) {
+        e.preventDefault()
+        searchRef.current.focus()
+      }
     }
     window.addEventListener('keydown', k)
     return () => window.removeEventListener('keydown', k)
   }, [])
 
   // ---------- importación ----------
-  const doUpload = async (files) => {
+  const pickFiles = () => { fileAlbum.current = album; fileRef.current.click() }
+  const doUpload = async (files, targetAlbum = album) => {
     if (!files.length) return
     if (upload?.running) { toast('Espera a que termine la importación en curso', 'warn'); return }
     setUpload({ running: true, done: 0, total: files.filter((f) => ALLOWED.test(f.name)).length, added: 0, duplicate: 0, rejected: 0, skipped: 0, errors: [] })
-    const t = await uploadInBatches(files, (p) => setUpload({ ...p, running: true }))
+    const t = await uploadInBatches(files, (p) => setUpload({ ...p, running: true }), { album: targetAlbum })
     setUpload({ ...t, running: false })
     if (t.total === 0) toast('Ninguno de esos archivos es JPG, PNG o WebP', 'warn')
-    refresh()
+    refreshLibrary()
   }
   // Importar una carpeta del disco: la lee el servidor (rápido, sin subir nada por el navegador).
   // Si el sistema no puede abrir el selector de carpetas, se usa el del navegador.
   const importFromDisk = async () => {
     if (upload?.running) { toast('Espera a que termine la importación en curso', 'warn'); return }
     let path
-    try { ({ path } = await api.pickFolder('Elige la carpeta con las fotos')) } catch { dirRef.current.click(); return }
+    try { ({ path } = await api.pickFolder('Elige la carpeta con las fotos')) }
+    catch { dirAlbum.current = album; dirRef.current.click(); return }
     if (!path) return
-    try { setUpload(fromServer(await api.importFolder(path))) } catch (e) { toast(e.message, 'error') }
+    try { setUpload(fromServer(await api.importFolder(path, album))) } catch (e) { toast(e.message, 'error') }
   }
   // al abrir la página: ¿hay una importación en curso? (sobrevive a recargar)
   useEffect(() => { api.importStatus().then((s) => { if (s.running) setUpload(fromServer(s)) }).catch(() => {}) }, [])
@@ -113,11 +146,11 @@ function Shell() {
   useEffect(() => {
     if (!(upload?.server && upload.running)) return
     const t = setInterval(async () => {
-      try { const s = await api.importStatus(); setUpload(fromServer(s)); if (!s.running) refresh() }
+      try { const s = await api.importStatus(); setUpload(fromServer(s)); if (!s.running) refreshLibrary() }
       catch { /* la API se está reiniciando: se vuelve a intentar */ }
     }, 800)
     return () => clearInterval(t)
-  }, [upload?.server, upload?.running, refresh])
+  }, [upload?.server, upload?.running, refreshLibrary])
   const onDrop = async (e) => {
     e.preventDefault(); setDrag(0)
     try { doUpload(await filesFromDrop(e.dataTransfer)) } catch { toast('No se pudieron leer los archivos soltados', 'error') }
@@ -148,67 +181,75 @@ function Shell() {
       onDragOver={(e) => { if (hasFiles(e)) e.preventDefault() }}
       onDragLeave={(e) => { if (hasFiles(e)) setDrag((d) => Math.max(0, d - 1)) }}
       onDrop={onDrop}>
-      <header className="sticky top-0 z-30 border-b border-white/5 bg-ink-950/85 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-[1680px] flex-wrap items-center gap-x-3 gap-y-2.5 px-4 py-3 sm:flex-nowrap sm:gap-5 sm:px-6">
-          <button onClick={() => { setView('library'); searchFor('') }} className="shrink-0 text-lg font-semibold tracking-tight" aria-label="RaceFinder, inicio">
-            Race<span className="text-accent">Finder</span>
+      <a href="#contenido" className="rf-skip rf-button rf-button-primary">Saltar al contenido</a>
+      <header className="rf-header">
+        <div className="rf-container rf-header-inner">
+          <button onClick={() => searchFor('')} className="rf-brand" aria-label="RaceFinder, inicio">
+            <span className="rf-brand-mark"><ScanLine size={19} aria-hidden /></span>
+            <span>Race<span className="text-accent">Finder</span></span>
           </button>
 
           {view === 'library' ? (
-            <form role="search" onSubmit={(e) => { e.preventDefault(); setSearch((s) => ({ ...s, q: draft })) }} className="relative order-last w-full min-w-0 sm:order-none sm:w-auto sm:max-w-xl sm:flex-1">
-              <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-500" size={17} aria-hidden />
-              <input ref={searchRef} aria-label="Buscar por número de dorsal" inputMode="numeric" autoComplete="off" value={draft}
+            <form role="search" onSubmit={(e) => { e.preventDefault(); setSearch((s) => ({ ...s, q: draft })) }} className="rf-header-search">
+              <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-accent" size={17} aria-hidden />
+              <input ref={searchRef} name="dorsal" aria-label="Buscar por número de dorsal" inputMode="numeric" autoComplete="off" value={draft}
                 onChange={(e) => setDraft(e.target.value.replace(/\D/g, '').slice(0, 5))}
                 onKeyDown={(e) => { if (e.key === 'Escape') setDraft('') }}
-                placeholder="Busca tu dorsal…"
-                className="h-11 w-full rounded-xl border border-white/10 bg-ink-900 pl-10 pr-24 text-[15px] placeholder:text-ink-500 focus:border-accent/60 focus:outline-none" />
-              <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
-                {draft && <button type="button" onClick={() => { setDraft(''); searchRef.current?.focus() }} className="rounded-md p-1.5 text-ink-500 hover:text-white" aria-label="Borrar búsqueda"><X size={15} /></button>}
-                <kbd className="hidden rounded border border-white/10 px-1.5 py-0.5 text-[11px] text-ink-500 sm:block">/</kbd>
+                placeholder="Buscar por dorsal"
+                className="rf-search-input" />
+              <div className="absolute inset-y-0 right-2 flex items-center gap-1">
+                {draft && <button type="button" onClick={() => { setDraft(''); searchRef.current?.focus() }} className="grid size-8 place-items-center rounded-md text-ink-300 hover:bg-white/5 hover:text-white" aria-label="Borrar búsqueda"><X size={16} aria-hidden /></button>}
+                <kbd className="rf-shortcut" aria-hidden="true">/</kbd>
               </div>
             </form>
           ) : (
-            <button onClick={() => setView('library')} className="order-last flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-ink-300 hover:text-white sm:order-none"><ArrowLeft size={16} aria-hidden /> Volver a las fotos</button>
+            <button onClick={() => setView('library')} className="rf-header-search rf-button rf-button-quiet w-fit"><ArrowLeft size={16} aria-hidden /> Volver a las fotos</button>
           )}
 
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            {pending > 0 && (
-              <div className="hidden items-center gap-2 rounded-full border border-white/10 bg-ink-900 py-1 pl-3 pr-1 text-xs md:flex" role="status" aria-live="polite">
-                {stats.processing_paused ? <span className="text-ink-300">En pausa · {done}/{total}</span>
-                  : <><Loader2 size={13} className="animate-spin text-accent" aria-hidden /><span>{facesPhase ? 'Analizando caras' : 'Leyendo dorsales'} {done}/{total}{eta && !facesPhase ? ` · ${eta}` : ''}</span></>}
-                <button onClick={pauseResume} className="rounded-full p-1.5 hover:bg-white/10" aria-label={stats.processing_paused ? 'Reanudar análisis' : 'Pausar análisis'}>
-                  {stats.processing_paused ? <Play size={13} /> : <Pause size={13} />}
-                </button>
-              </div>
-            )}
-            <button onClick={() => fileRef.current.click()} className="flex h-10 items-center gap-2 rounded-xl bg-accent px-3.5 text-sm font-medium text-ink-950 hover:brightness-110" title="Añadir fotos">
-              <Upload size={16} aria-hidden /><span className="hidden sm:inline">Añadir fotos</span>
+          <div className="rf-header-actions">
+            <button onClick={importFromDisk} className="rf-button rf-button-quiet" aria-label="Importar carpeta" title="Importar carpeta">
+              <FolderOpen size={18} aria-hidden /><span className="rf-header-label">Carpeta</span>
             </button>
-            <button onClick={importFromDisk} className="hidden h-10 items-center gap-2 rounded-xl border border-white/10 px-3.5 text-sm hover:bg-white/5 sm:flex" title="Importar una carpeta del disco (rápido: no se sube nada, se enlaza)">
-              <FolderOpen size={16} aria-hidden /> Carpeta
+            <button onClick={pickFiles} className="rf-button rf-button-primary" aria-label="Añadir fotos" title="Añadir fotos">
+              <Upload size={17} aria-hidden /><span className="rf-header-label">Añadir fotos</span>
             </button>
-            <SettingsPanel onWiped={() => searchFor('')} onChanged={refresh} onOpenEval={() => setView('eval')} onAddFolder={importFromDisk} />
-            <input ref={fileRef} type="file" multiple accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" hidden onChange={(e) => { doUpload([...e.target.files]); e.target.value = '' }} />
-            <input ref={dirRef} type="file" webkitdirectory="" directory="" multiple hidden onChange={(e) => { doUpload([...e.target.files]); e.target.value = '' }} />
+            <SettingsPanel onWiped={() => searchFor('')} onChanged={refreshLibrary} onOpenEval={() => setView('eval')} />
+            <input ref={fileRef} type="file" multiple accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" hidden onChange={(e) => { doUpload([...e.target.files], fileAlbum.current); e.target.value = ''; fileAlbum.current = undefined }} />
+            <input ref={dirRef} type="file" webkitdirectory="" directory="" multiple hidden onChange={(e) => { doUpload([...e.target.files], dirAlbum.current); e.target.value = ''; dirAlbum.current = null }} />
           </div>
         </div>
         {pending > 0 && (
-          <div className="h-0.5 bg-white/5" aria-hidden><div className="h-full bg-accent transition-all duration-700" style={{ width: `${total ? (done / total) * 100 : 0}%` }} /></div>
+          <div className="rf-processing">
+            <div className="rf-container flex min-h-11 items-center gap-3">
+              <div role="status" className="flex items-center gap-2 text-sm text-ink-300">
+                {!stats.processing_paused && <Loader2 size={15} className="animate-spin text-accent" aria-hidden />}
+                <span>{stats.processing_paused ? 'Análisis en pausa' : facesPhase ? 'Analizando caras' : 'Leyendo dorsales'} · {done}/{total}{eta && !facesPhase ? ` · ${eta}` : ''}</span>
+              </div>
+              <button onClick={pauseResume} className="ml-auto grid size-11 shrink-0 place-items-center rounded-lg hover:bg-white/5" aria-label={stats.processing_paused ? 'Reanudar análisis' : 'Pausar análisis'}>
+                {stats.processing_paused ? <Play size={16} aria-hidden /> : <Pause size={16} aria-hidden />}
+              </button>
+            </div>
+            <div className="h-0.5 bg-white/5" aria-hidden><div className="h-full origin-left bg-accent transition-transform duration-700" style={{ transform: `scaleX(${total ? done / total : 0})` }} /></div>
+          </div>
         )}
       </header>
 
       {offline && (
-        <div role="alert" className="mx-auto mt-4 flex w-[calc(100%-2rem)] max-w-[1680px] items-center justify-between gap-3 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm">
-          <span className="flex items-center gap-2"><AlertTriangle size={16} aria-hidden /> No se puede contactar con RaceFinder. Comprueba que la terminal con <code>pnpm run dev</code> sigue abierta.</span>
+        <div role="alert" className="mx-auto mt-4 flex w-[calc(100%-2rem)] max-w-[1536px] flex-wrap items-center justify-between gap-3 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm">
+          <p><AlertTriangle size={16} className="mr-2 inline-block text-red-300" aria-hidden /> No se puede contactar con RaceFinder. Comprueba que la terminal con <code>pnpm run dev</code> sigue abierta.</p>
           <button onClick={refresh} className="flex shrink-0 items-center gap-1 underline"><RefreshCw size={14} aria-hidden /> Reintentar</button>
         </div>
       )}
 
-      <main className="flex flex-1 flex-col">
-        {view === 'library'
-          ? <Library q={q} similar={similar} setSimilar={(v) => setSearch((s) => ({ ...s, similar: v }))} stats={stats} version={version}
-              onSearch={searchFor} onRefresh={refresh} onPickFiles={() => fileRef.current.click()} onPickFolder={importFromDisk} />
-          : <EvalView />}
+      <main id="contenido" tabIndex={-1} className="flex flex-1 flex-col">
+        {view === 'library' ? (
+          <>
+            <AlbumControls albums={albums ?? []} current={currentAlbum} importing={upload?.running} onSelect={selectAlbum} onChange={refreshLibrary} />
+            {(!album || currentAlbum) && <Library key={album ?? 'all'} album={currentAlbum} albums={albums ?? []} q={q} similar={similar}
+              setSimilar={(v) => setSearch((s) => ({ ...s, similar: v }))} stats={stats} version={version}
+              onSearch={searchFor} onRefresh={refresh} onPickFiles={pickFiles} onPickFolder={importFromDisk} />}
+          </>
+        ) : <EvalView />}
       </main>
 
       {upload && <UploadPanel u={upload} onClose={() => setUpload(null)} />}
@@ -247,7 +288,7 @@ function UploadPanel({ u, onClose }) {
         {u.server && u.running && <button onClick={() => api.importCancel().catch(() => {})} className="text-xs underline text-ink-300 hover:text-white">Cancelar</button>}
         {!u.running && <button onClick={onClose} aria-label="Cerrar" className="text-ink-500 hover:text-white"><X size={16} /></button>}
       </div>
-      {u.running && <div className="mt-3 h-1 overflow-hidden rounded bg-white/10"><div className="h-full bg-accent transition-all" style={{ width: `${pct}%` }} /></div>}
+      {u.running && <div className="mt-3 h-1 overflow-hidden rounded bg-white/10"><div className="h-full origin-left bg-accent transition-transform" style={{ transform: `scaleX(${pct / 100})` }} /></div>}
       <p className="mt-2 text-ink-300">
         <strong className="text-white">{u.added}</strong> nuevas · {u.duplicate} ya estaban{u.rejected ? <> · <span className="text-red-300">{u.rejected} con error</span></> : null}
         {u.skipped ? ` · ${u.skipped} ignoradas (no son fotos)` : ''}

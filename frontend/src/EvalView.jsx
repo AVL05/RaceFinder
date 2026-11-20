@@ -22,9 +22,9 @@ export default function EvalView() {
   useEffect(() => { reload() }, [reload])
 
   return (
-    <div className="mx-auto w-full max-w-[1200px] space-y-8 px-4 py-6 sm:px-5" data-testid="eval">
+    <div className="rf-container rf-workspace space-y-8" data-testid="eval">
       <div>
-        <h2 className="text-xl font-semibold">Evaluación del OCR</h2>
+        <h1 className="rf-workspace-title">Evaluación del OCR</h1>
         <p className="mt-1 max-w-3xl text-sm text-ink-300">
           Etiqueta a mano los dorsales realmente legibles de una carpeta de fotos y mide cuánto acierta el motor.
           Cada foto se asigna automáticamente a <strong>ajuste</strong> (30 %, para tocar parámetros) o <strong>test</strong> (70 %, validación final).

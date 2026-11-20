@@ -29,7 +29,8 @@ Sin modelo de dorsales dedicado (no hay uno libre y fiable verificado). Estrateg
 Limitación conocida: sin segmentar corredores, un número de otro texto (cartel, reloj) puede aparecer como dorsal; se mitiga con revisión manual. Mejora prevista: detector de personas/torso para acotar la búsqueda y un clasificador de "es dorsal".
 
 ## Esquema SQLite
-- `photos(id, sha256 UNIQUE, original_name, ext, size, width, height, added_at, ocr_status, ocr_error, ocr_engine)`
+- `photos(id, sha256 UNIQUE, original_name, ext, size, width, height, added_at, favorite, ocr_status, ocr_error, ocr_engine)`
+- `albums(id, name, name_key UNIQUE, min_number, max_number)` y `album_photos(album_id, photo_id)`. Una foto puede aparecer en varios álbumes. Borrar una foto o un álbum elimina sus asociaciones mediante claves foráneas.
 - `bib_detections(id, photo_id→photos ON DELETE CASCADE, number, raw_text, confidence, bbox JSON, review auto|confirmed|rejected|manual)`
 - `jobs(...)` reservada para cola multi-tipo (Fase 2); hoy el estado de la cola se deriva de `photos.ocr_status`.
 
@@ -47,3 +48,10 @@ Escucha solo en 127.0.0.1; `TrustedHostMiddleware` (anti DNS-rebinding); CORS li
 
 ## Endpoints añadidos en la v0.2
 `GET /api/photos?filter=with_bib|no_bib|pending|error`, `GET /api/photos/{id}`, `GET /api/bibs/index` (dorsales con nº de fotos), `GET /api/bibs/{id}/crop` (recorte del dorsal, cacheado en `data/crops`), `POST /api/photos/delete`, `POST /api/export/download` (ZIP en streaming desde formulario, sin pasar por disco ni memoria del navegador).
+
+## Catálogo y álbumes
+
+- `GET/POST /api/albums`, `PATCH/DELETE /api/albums/{id}` y `POST /api/albums/{id}/photos` gestionan el catálogo, los rangos y las asociaciones sin copiar originales.
+- El parámetro opcional `album` delimita fotos, estadísticas, índice, coincidencias y referencias faciales. La carga por navegador usa el mismo parámetro. La importación nativa acepta `album` en el cuerpo. Se valida el hash completo para asignar a otro álbum una foto que solo coincide en la huella rápida.
+- `GET /api/photos`, `GET /api/photos/selection` y `GET /api/export/catalog.csv` comparten filtros, nombre y orden. `PUT /api/photos/favorites` aplica un estado de favorito a uno o varios identificadores.
+- La base existente incorpora los álbumes y las favoritas al arrancar. Los rangos por álbum se aplican al consultar resultados. La cola de análisis sigue siendo compartida.

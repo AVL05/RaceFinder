@@ -39,7 +39,7 @@ def images():
     }
 
 
-@pytest.mark.parametrize("name", list(images()))
+@pytest.mark.parametrize("name", ("lena", "messi", "dos caras", "tamaño impar", "reducida"))
 def test_ort_matches_opencv(models, cv_models, name):
     det, rec = cv_models
     img = images()[name]
@@ -73,8 +73,12 @@ def test_ort_does_not_confuse_identities(models):
 def test_face_engine_gpu_request_falls_back_to_opencv(monkeypatch):
     """Si ONNX Runtime no puede activar la GPU, el motor sigue con OpenCV (CPU) sin fallar."""
     import app.faces as faces
-    monkeypatch.setattr(faces, "_ort_cache", {})
-    e = FaceEngine(device="cuda")   # este entorno no tiene CUDA
+
+    def unavailable(*_):
+        raise RuntimeError("CUDA provider unavailable")
+
+    monkeypatch.setattr(faces, "get_ort_models", unavailable)
+    e = FaceEngine(device="cuda")
     e._load()
     assert e.device == "cpu" and e._det is not None and e._ort is None
 

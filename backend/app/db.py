@@ -1,7 +1,20 @@
 import sqlite3
 import threading
+from contextlib import contextmanager
 
 from .evaluation import EVAL_SCHEMA
+
+
+@contextmanager
+def write_transaction(conn):
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS photos(
@@ -12,10 +25,24 @@ CREATE TABLE IF NOT EXISTS photos(
   size INTEGER NOT NULL,
   width INTEGER, height INTEGER,
   added_at TEXT NOT NULL DEFAULT (datetime('now')),
+  favorite INTEGER NOT NULL DEFAULT 0,
   ocr_status TEXT NOT NULL DEFAULT 'pending',   -- pending|processing|done|error
   ocr_error TEXT,
   ocr_engine TEXT
 );
+CREATE TABLE IF NOT EXISTS albums(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  name_key TEXT NOT NULL UNIQUE,
+  min_number INTEGER,
+  max_number INTEGER
+);
+CREATE TABLE IF NOT EXISTS album_photos(
+  album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+  photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+  PRIMARY KEY(album_id, photo_id)
+);
+CREATE INDEX IF NOT EXISTS idx_album_photos_photo ON album_photos(photo_id, album_id);
 CREATE TABLE IF NOT EXISTS bib_detections(
   id INTEGER PRIMARY KEY,
   photo_id INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
@@ -61,6 +88,9 @@ class Database:
             if "present" not in {r[1] for r in c.execute("PRAGMA table_info(gt_labels)")}:
                 c.execute("ALTER TABLE gt_labels ADD COLUMN present TEXT NOT NULL DEFAULT '[]'")
             cols = {r[1] for r in c.execute("PRAGMA table_info(photos)")}
+            if "favorite" not in cols:
+                c.execute("ALTER TABLE photos ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_photos_favorite ON photos(id) WHERE favorite=1")
             if "face_status" not in cols:  # migración: índice facial opcional
                 c.execute("ALTER TABLE photos ADD COLUMN face_status TEXT NOT NULL DEFAULT 'pending'")
             if "head_hash" not in cols:  # migración: huella rápida para reanudar importaciones sin reenviar
@@ -79,6 +109,7 @@ class Database:
         if c is None:
             c = sqlite3.connect(self.path, timeout=30, isolation_level=None)
             c.row_factory = sqlite3.Row
+            c.create_function("casefold", 1, str.casefold, deterministic=True)
             c.execute("PRAGMA journal_mode=WAL")
             c.execute("PRAGMA foreign_keys=ON")
             c.execute("PRAGMA synchronous=NORMAL")   # seguro en WAL; evita un fsync por cada INSERT de la importación

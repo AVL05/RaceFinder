@@ -1,5 +1,7 @@
 """API REST de RaceFinder. Solo escucha en localhost por defecto (ver run.ps1)."""
 import errno
+import csv
+import io
 import json
 import os
 import subprocess
@@ -14,9 +16,9 @@ import uuid
 import zipfile
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -26,10 +28,11 @@ from pydantic import BaseModel, Field
 from . import faces as facemod
 from . import imaging
 from .bibs import BibConfig, similar_numbers
+from .catalog import ADD_TO_ALBUM, album_clause, attach_photo, register_photo, require_album
 from .config import Settings
 from .importer import ImportJob
 from .evaluation import EvalRunner, TAGS, evaluate_search, split_for
-from .db import Database
+from .db import Database, write_transaction
 from .worker import Worker
 
 BIB_RE = re.compile(r"^\d{1,5}$")
@@ -46,6 +49,25 @@ class IdsBody(BaseModel):
 
 class ImportFolderBody(BaseModel):
     path: str = Field(min_length=1, max_length=1000)
+    album: int | None = Field(None, gt=0)
+
+
+class AlbumName(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    min_number: int | None = Field(None, ge=0, le=99999)
+    max_number: int | None = Field(None, ge=0, le=99999)
+
+
+class AlbumCreation(AlbumName):
+    ids: List[int] = Field(default_factory=list, max_length=20000)
+
+
+class AlbumPhotos(IdsBody):
+    action: Literal["add", "remove"]
+
+
+class FavoritesBody(IdsBody):
+    favorite: bool
 
 
 class PickFolderBody(BaseModel):
@@ -140,25 +162,32 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
     app.state.evaluator = evaluator
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
-                       allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["Content-Type"])
+                       allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["Content-Type"])
 
     def photo_row(r, bibs=None):
         d = {"id": r["id"], "v": r["sha256"][:12], "name": r["original_name"], "size": r["size"], "width": r["width"], "height": r["height"],
-             "ocr_status": r["ocr_status"], "ocr_error": r["ocr_error"], "added_at": r["added_at"]}
+             "ocr_status": r["ocr_status"], "ocr_error": r["ocr_error"], "added_at": r["added_at"], "favorite": bool(r["favorite"])}
         if bibs is not None:
             d["bibs"] = bibs
         return d
 
-    def bibs_for(ids):
+    def number_range(album, cfg=None):
+        if album is not None:
+            row = db.conn().execute("SELECT min_number,max_number FROM albums WHERE id=?", (album,)).fetchone()
+            if row and row["min_number"] is not None:
+                return row["min_number"], row["max_number"]
+        cfg = cfg if cfg is not None else load_settings()
+        return cfg["min_number"], cfg["max_number"]
+
+    def bibs_for(ids, album=None):
         if not ids:
             return {}
         q = ",".join("?" * len(ids))
         out = {i: [] for i in ids}
-        cfg = load_settings()
         for b in db.conn().execute(
                 f"SELECT * FROM bib_detections WHERE photo_id IN ({q}) AND review!='rejected' "
                 f"AND (review='manual' OR CAST(number AS INTEGER) BETWEEN ? AND ?) ORDER BY confidence DESC",
-                (*ids, cfg["min_number"], cfg["max_number"])):
+                (*ids, *number_range(album))):
             out[b["photo_id"]].append({"id": b["id"], "number": b["number"], "confidence": b["confidence"],
                                        "bbox": json.loads(b["bbox"]), "review": b["review"]})
         return out
@@ -169,6 +198,91 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
             raise HTTPException(404, "Foto no encontrada")
         return r
 
+    def album_name(body):
+        name = body.name.strip()
+        if not name or any(ord(c) < 32 for c in name):
+            raise HTTPException(422, "Escribe un nombre válido para el álbum")
+        return name
+
+    def album_range(body):
+        if body.min_number is None and body.max_number is None:
+            return None, None
+        lo = body.min_number if body.min_number is not None else 0
+        hi = body.max_number if body.max_number is not None else 99999
+        if lo > hi:
+            raise HTTPException(422, "El dorsal mínimo no puede ser mayor que el máximo")
+        return lo, hi
+
+    @app.get("/api/albums")
+    def albums():
+        return {"albums": [dict(r) for r in db.conn().execute(
+            "SELECT a.id, a.name, a.min_number, a.max_number, COUNT(ap.photo_id) photos FROM albums a "
+            "LEFT JOIN album_photos ap ON ap.album_id=a.id GROUP BY a.id ORDER BY a.name_key",
+        )]}
+
+    @app.post("/api/albums", status_code=201)
+    def create_album(body: AlbumCreation):
+        name = album_name(body)
+        lo, hi = album_range(body)
+        c = db.conn()
+        try:
+            with write_transaction(c):
+                album_id = c.execute(
+                    "INSERT INTO albums(name,name_key,min_number,max_number) VALUES(?,?,?,?) RETURNING id",
+                    (name, name.casefold(), lo, hi),
+                ).fetchone()["id"]
+                cur = c.executemany(ADD_TO_ALBUM, ((album_id, pid, album_id) for pid in dict.fromkeys(body.ids)))
+        except sqlite3.IntegrityError as e:
+            raise HTTPException(409, "Ya existe un álbum con ese nombre") from e
+        return {"id": album_id, "name": name, "photos": cur.rowcount, "min_number": lo, "max_number": hi}
+
+    @app.patch("/api/albums/{album}")
+    def update_album(album: int, body: AlbumName):
+        name = album_name(body)
+        update_range = bool({"min_number", "max_number"} & body.model_fields_set)
+        try:
+            if update_range:
+                changed = db.conn().execute(
+                    "UPDATE albums SET name=?,name_key=?,min_number=?,max_number=? WHERE id=?",
+                    (name, name.casefold(), *album_range(body), album),
+                ).rowcount
+            else:
+                changed = db.conn().execute("UPDATE albums SET name=?,name_key=? WHERE id=?", (name, name.casefold(), album)).rowcount
+        except sqlite3.IntegrityError as e:
+            raise HTTPException(409, "Ya existe un álbum con ese nombre") from e
+        if not changed:
+            raise HTTPException(404, "Álbum no encontrado")
+        return {"id": album, "name": name}
+
+    @app.delete("/api/albums/{album}")
+    def delete_album(album: int):
+        job = importer.status()
+        if job["running"] and job["album"] == album:
+            raise HTTPException(409, "Espera a que termine la importación de este álbum")
+        if not db.conn().execute("DELETE FROM albums WHERE id=?", (album,)).rowcount:
+            raise HTTPException(404, "Álbum no encontrado")
+        return {"deleted": album}
+
+    @app.post("/api/albums/{album}/photos")
+    def change_album_photos(album: int, body: AlbumPhotos):
+        c = db.conn()
+        ids = dict.fromkeys(body.ids)
+        with write_transaction(c):
+            require_album(c, album)
+            if body.action == "add":
+                cur = c.executemany(ADD_TO_ALBUM, ((album, pid, album) for pid in ids))
+            else:
+                cur = c.executemany("DELETE FROM album_photos WHERE album_id=? AND photo_id=?", ((album, pid) for pid in ids))
+        return {"changed": cur.rowcount}
+
+    @app.put("/api/photos/favorites")
+    def set_favorites(body: FavoritesBody):
+        c = db.conn()
+        with write_transaction(c):
+            cur = c.executemany("UPDATE photos SET favorite=? WHERE id=? AND favorite<>?",
+                                ((body.favorite, pid, body.favorite) for pid in dict.fromkeys(body.ids)))
+        return {"changed": cur.rowcount}
+
     @app.get("/api/health")
     def health():
         return {"status": "ok", "ocr_engine": worker.reader.engine_name, "ocr_device": worker.reader.device,
@@ -176,31 +290,39 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
                 "workers": worker.n_workers, "workers_auto": worker.workers_auto}
 
     @app.get("/api/stats")
-    def stats():
+    def stats(album: int | None = None):
         c = db.conn()
-        total = c.execute("SELECT COUNT(*) n, COALESCE(SUM(size),0) s FROM photos").fetchone()
-        by = {r["ocr_status"]: r["n"] for r in c.execute("SELECT ocr_status, COUNT(*) n FROM photos GROUP BY ocr_status")}
+        require_album(c, album)
+        scope, args = album_clause(album, "id")
+        matches, album_args = album_clause(album, "photo_id")
+        total = c.execute(f"SELECT COUNT(*) n, COALESCE(SUM(size),0) s FROM photos WHERE {scope}", args).fetchone()
+        by = {r["ocr_status"]: r["n"] for r in c.execute(f"SELECT ocr_status, COUNT(*) n FROM photos WHERE {scope} GROUP BY ocr_status", args)}
         cfg = load_settings()
-        rng = (cfg["min_number"], cfg["max_number"])
-        nb = c.execute("SELECT COUNT(DISTINCT number) n FROM bib_detections WHERE review!='rejected' AND "
-                       "(review='manual' OR CAST(number AS INTEGER) BETWEEN ? AND ?)", rng).fetchone()["n"]
-        wb = c.execute("SELECT COUNT(DISTINCT photo_id) n FROM bib_detections WHERE review!='rejected' AND "
-                       "(review='manual' OR CAST(number AS INTEGER) BETWEEN ? AND ?)", rng).fetchone()["n"]
-        fby = {r["face_status"]: r["n"] for r in c.execute("SELECT face_status, COUNT(*) n FROM photos GROUP BY face_status")}
+        rng = number_range(album, cfg)
+        bib_counts = c.execute(
+            "SELECT COUNT(DISTINCT number) numbers, COUNT(DISTINCT photo_id) photos, "
+            "COUNT(DISTINCT CASE WHEN review='auto' AND confidence<? THEN photo_id END) needs_review "
+            f"FROM bib_detections WHERE review!='rejected' AND (review='manual' OR CAST(number AS INTEGER) BETWEEN ? AND ?) AND {matches}",
+            (settings.doubtful_below, *rng, *album_args),
+        ).fetchone()
+        favorites = c.execute(f"SELECT COUNT(*) FROM photos WHERE favorite=1 AND {scope}", args).fetchone()[0]
+        fby = {r["face_status"]: r["n"] for r in c.execute(f"SELECT face_status, COUNT(*) n FROM photos WHERE {scope} GROUP BY face_status", args)}
         faces = {"enabled": cfg["faces_enabled"], "status": fby, "error": worker.face_error,
-                 "count": c.execute("SELECT COUNT(*) FROM faces").fetchone()[0]}
+                 "count": c.execute(f"SELECT COUNT(*) FROM faces WHERE {matches}", album_args).fetchone()[0]}
         try:
             disk_free = shutil.disk_usage(settings.data_dir).free
         except OSError:
             disk_free = None
-        return {"photos": total["n"], "bytes": total["s"], "ocr": by, "distinct_bibs": nb, "with_bib": wb,
+        return {"photos": total["n"], "bytes": total["s"], "ocr": by, "distinct_bibs": bib_counts["numbers"],
+                "with_bib": bib_counts["photos"], "needs_review": bib_counts["needs_review"], "favorites": favorites,
                 "processing_paused": worker.is_paused(), "current": worker.current, "faces": faces,
                 "worker_alive": worker.alive(), "worker_error": worker.last_error, "disk_free": disk_free}
 
     @app.post("/api/photos")
-    def upload(files: List[UploadFile] = File(...)):
+    def upload(files: List[UploadFile] = File(...), album: int | None = None):
         results = []
         c = db.conn()
+        require_album(c, album)
         if shutil.disk_usage(settings.data_dir).free < MIN_FREE_BYTES:
             raise HTTPException(507, "Queda poco espacio en el disco. Libera espacio y vuelve a añadir la carpeta: las fotos ya importadas se omitirán.")
         for f in files:
@@ -221,18 +343,15 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
             row = c.execute("SELECT id FROM photos WHERE sha256=?", (meta["sha256"],)).fetchone()
             if row:
                 imaging.commit_original(settings, meta)  # descarta el tmp
+                attach_photo(c, album, row["id"])
                 results.append({"name": name, "status": "duplicate", "id": row["id"]})
                 continue
             created = False
             try:
                 created = imaging.commit_original(settings, meta)
                 imaging.make_thumb(settings, meta["sha256"], meta["ext"])
-                cur = c.execute(
-                    "INSERT INTO photos(sha256,original_name,ext,size,width,height,head_hash) VALUES(?,?,?,?,?,?,?)",
-                    (meta["sha256"], name, meta["ext"], meta["size"], meta["width"], meta["height"], meta["head"]))
-                results.append({"name": name, "status": "added", "id": cur.lastrowid})
-            except sqlite3.IntegrityError:
-                results.append({"name": name, "status": "duplicate"})
+                photo_id, added = register_photo(c, meta, name, album)
+                results.append({"name": name, "status": "added" if added else "duplicate", "id": photo_id})
             except Exception as e:
                 if created:  # sin fila en la BD no hay quien lo borre: se limpia para no acumular huérfanos
                     imaging.original_path(settings, meta["sha256"], meta["ext"]).unlink(missing_ok=True)
@@ -242,40 +361,73 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
         return {"results": results}
 
     RANGE_SQL = "(d.review='manual' OR CAST(d.number AS INTEGER) BETWEEN ? AND ?)"
+    CATALOG_SORTS = {
+        "recent": "id DESC", "oldest": "id ASC",
+        "name": "casefold(original_name), id DESC", "name_desc": "casefold(original_name) DESC, id DESC",
+    }
 
-    @app.get("/api/photos")
-    def list_photos(limit: int = 200, offset: int = 0, status: str = "", filter: str = "all"):
-        """filter: all | with_bib | no_bib | pending | error"""
-        limit = max(1, min(limit, 1000))
-        cfg = load_settings()
-        rng = (cfg["min_number"], cfg["max_number"])
-        has_bib = (f"EXISTS(SELECT 1 FROM bib_detections d WHERE d.photo_id=photos.id AND d.review!='rejected' AND {RANGE_SQL})")
-        where, args = [], []
+    def catalog_query(album, filename, filter, status, sort):
+        rng = number_range(album)
+        bib_scope = f"FROM bib_detections d WHERE d.photo_id=photos.id AND d.review!='rejected' AND {RANGE_SQL}"
+        scope, album_args = album_clause(album, "id")
+        where, args = [scope], list(album_args)
+        if filename.strip():
+            where.append("instr(casefold(original_name), ?) > 0")
+            args.append(filename.strip().casefold())
         if status in ("pending", "processing", "done", "error"):
             where.append("ocr_status=?"); args.append(status)
         if filter == "with_bib":
-            where.append(has_bib); args += rng
+            where.append(f"EXISTS(SELECT 1 {bib_scope})"); args += rng
         elif filter == "no_bib":
-            where.append(f"ocr_status='done' AND NOT {has_bib}"); args += rng
+            where.append(f"ocr_status='done' AND NOT EXISTS(SELECT 1 {bib_scope})"); args += rng
         elif filter == "pending":
             where.append("ocr_status IN ('pending','processing')")
         elif filter == "error":
             where.append("ocr_status='error'")
-        w = (" WHERE " + " AND ".join(where)) if where else ""
+        elif filter == "favorites":
+            where.append("favorite=1")
+        elif filter == "review":
+            where.append(f"EXISTS(SELECT 1 {bib_scope} AND d.review='auto' AND d.confidence<?)")
+            args.extend((*rng, settings.doubtful_below))
+        return " AND ".join(where), args, CATALOG_SORTS.get(sort, CATALOG_SORTS["recent"])
+
+    @app.get("/api/photos")
+    def list_photos(limit: int = 200, offset: int = 0, status: str = "", filter: str = "all",
+                    album: int | None = None, filename: str = Query("", max_length=200), sort: str = "recent"):
+        limit = max(1, min(limit, 1000))
         c = db.conn()
-        total = c.execute(f"SELECT COUNT(*) FROM photos{w}", args).fetchone()[0]
-        rows = c.execute(f"SELECT * FROM photos{w} ORDER BY id DESC LIMIT ? OFFSET ?", (*args, limit, max(0, offset))).fetchall()
-        b = bibs_for([r["id"] for r in rows])
+        require_album(c, album)
+        where, args, order = catalog_query(album, filename, filter, status, sort)
+        total = c.execute(f"SELECT COUNT(*) FROM photos WHERE {where}", args).fetchone()[0]
+        rows = c.execute(f"SELECT * FROM photos WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                         (*args, limit, max(0, offset))).fetchall()
+        b = bibs_for([r["id"] for r in rows], album)
         return {"photos": [photo_row(r, b[r["id"]]) for r in rows], "total": total}
 
+    @app.get("/api/photos/selection")
+    def catalog_selection(filter: str = "all", album: int | None = None,
+                          filename: str = Query("", max_length=200), sort: str = "recent"):
+        c = db.conn()
+        require_album(c, album)
+        where, args, order = catalog_query(album, filename, filter, "", sort)
+        rows = c.execute(
+            f"SELECT id, original_name name, substr(sha256,1,12) v, favorite FROM photos WHERE {where} ORDER BY {order} LIMIT 20001",
+            args,
+        ).fetchall()
+        if len(rows) > 20000:
+            raise HTTPException(422, "Acota la selección a 20.000 fotos o menos")
+        return {"photos": [dict(r) for r in rows]}
+
     @app.get("/api/bibs/index")
-    def bib_index(limit: int = 300):
+    def bib_index(limit: int = 300, album: int | None = None):
         """Dorsales detectados con su número de fotos: para explorar sin saber qué buscar."""
-        cfg = load_settings()
-        rows = db.conn().execute(
+        c = db.conn()
+        require_album(c, album)
+        scope, args = album_clause(album, "d.photo_id")
+        rows = c.execute(
             f"SELECT d.number, COUNT(DISTINCT d.photo_id) n, MAX(d.confidence) best FROM bib_detections d "
-            f"WHERE d.review!='rejected' AND {RANGE_SQL} GROUP BY d.number ORDER BY CAST(d.number AS INTEGER) LIMIT ?",
-            (cfg["min_number"], cfg["max_number"], max(1, min(limit, 2000)))).fetchall()
+            f"WHERE d.review!='rejected' AND {RANGE_SQL} AND {scope} GROUP BY d.number ORDER BY CAST(d.number AS INTEGER) LIMIT ?",
+            (*number_range(album), *args, max(1, min(limit, 2000)))).fetchall()
         return {"bibs": [{"number": r["number"], "photos": r["n"], "best": r["best"]} for r in rows]}
 
     @app.get("/api/bibs/{bid}/crop")
@@ -290,9 +442,10 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})  # los id pueden reutilizarse
 
     @app.get("/api/photos/{pid}")
-    def photo_detail(pid: int):
+    def photo_detail(pid: int, album: int | None = None):
+        require_album(db.conn(), album)
         r = get_photo(pid)
-        return photo_row(r, bibs_for([pid])[pid])
+        return photo_row(r, bibs_for([pid], album)[pid])
 
     @app.get("/api/photos/{pid}/thumb")
     def thumb(pid: int):
@@ -359,16 +512,19 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
         items: List[Fingerprint] = Field(max_length=5000)
 
     @app.post("/api/photos/known")
-    def photos_known(body: KnownBody):
+    def photos_known(body: KnownBody, album: int | None = None):
         """¿Cuáles de estas fotos ya están? (tamaño + SHA-256 de los primeros 64 KB, calculado en el navegador).
         Permite reanudar una importación de miles de fotos sin volver a enviar las que ya se subieron."""
         c = db.conn()
+        require_album(c, album)
+        scope, args = album_clause(album, "id")
         known = set()
         pairs = list({(i.size, i.head) for i in body.items})
         for k in range(0, len(pairs), 400):
             chunk = pairs[k:k + 400]
             where = " OR ".join(["(size=? AND head_hash=?)"] * len(chunk))
-            for r in c.execute(f"SELECT size, head_hash FROM photos WHERE {where}", [v for p in chunk for v in p]):
+            for r in c.execute(f"SELECT size, head_hash FROM photos WHERE ({where}) AND {scope}",
+                               (*[v for p in chunk for v in p], *args)):
                 known.add((r["size"], r["head_hash"]))
         return {"known": [(i.size, i.head) in known for i in body.items]}
 
@@ -450,10 +606,11 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
 
     @app.post("/api/import/folder")
     def import_folder(body: ImportFolderBody):
+        require_album(db.conn(), body.album)
         if shutil.disk_usage(settings.data_dir).free < MIN_FREE_BYTES:
             raise HTTPException(507, "Queda poco espacio en el disco. Libera espacio y vuelve a intentarlo.")
         try:
-            importer.start(body.path)
+            importer.start(body.path, body.album)
         except ValueError as e:
             raise HTTPException(422, str(e))
         except RuntimeError as e:
@@ -517,23 +674,23 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
 
     # ---------- búsqueda ----------
     @app.get("/api/search")
-    def search(bib: str, mode: str = "exact", min_conf: float = 0.0, limit: int = 1000):
+    def search(bib: str, mode: str = "exact", min_conf: float = 0.0, limit: int = 1000, album: int | None = None):
         """match: exact (lectura fiable o confirmada) · doubtful (exacto con OCR < umbral) · similar (distancia 1)."""
         bib = bib.strip()
         if not BIB_RE.match(bib):
             raise HTTPException(422, "El dorsal debe tener entre 1 y 5 dígitos")
         c = db.conn()
-        cfg = load_settings()
-        rng = (cfg["min_number"], cfg["max_number"])
+        require_album(c, album)
+        scope, args = album_clause(album, "d.photo_id")
+        rng = number_range(album)
         # candidatos en SQL: mismo número o longitud ±1 (los similares se filtran después)
         if mode == "similar":
-            rows = c.execute("SELECT * FROM bib_detections WHERE review!='rejected' AND confidence>=? "
-                             "AND LENGTH(number) BETWEEN ? AND ? AND (review='manual' OR CAST(number AS INTEGER) BETWEEN ? AND ?)",
-                             (min_conf, len(bib) - 1, len(bib) + 1, *rng)).fetchall()
+            rows = c.execute("SELECT d.* FROM bib_detections d WHERE d.review!='rejected' AND d.confidence>=? "
+                             f"AND LENGTH(d.number) BETWEEN ? AND ? AND {RANGE_SQL} AND {scope}",
+                             (min_conf, len(bib) - 1, len(bib) + 1, *rng, *args)).fetchall()
         else:
-            rows = c.execute("SELECT * FROM bib_detections WHERE review!='rejected' AND confidence>=? AND number=? "
-                             "AND (review='manual' OR CAST(number AS INTEGER) BETWEEN ? AND ?)",
-                             (min_conf, bib, *rng)).fetchall()
+            rows = c.execute("SELECT d.* FROM bib_detections d WHERE d.review!='rejected' AND d.confidence>=? AND d.number=? "
+                             f"AND {RANGE_SQL} AND {scope}", (min_conf, bib, *rng, *args)).fetchall()
         rank = {"exact": 3, "doubtful": 2, "similar": 1}
         hits = {}
         for b in rows:
@@ -556,6 +713,7 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
         if ids:
             q = ",".join("?" * len(ids))
             photos = {r["id"]: r for r in c.execute(f"SELECT * FROM photos WHERE id IN ({q})", ids)}
+        ids = [i for i in ids if i in photos]
         return {"query": bib, "mode": mode, "count": len(ids),
                 "results": [{**photo_row(photos[i]), "match": hits[i]["match"], "score": round(hits[i]["score"], 4),
                              "evidence": hits[i]["evidence"]} for i in ids]}
@@ -582,6 +740,49 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
         return {"id": bid, "review": body.review}
 
     # ---------- exportación ----------
+    @app.get("/api/export/catalog.csv")
+    def export_catalog(filter: str = "all", album: int | None = None,
+                       filename: str = Query("", max_length=200), sort: str = "recent"):
+        c = db.conn()
+        require_album(c, album)
+        where, args, order = catalog_query(album, filename, filter, "", sort)
+        rows = c.execute(
+            f"SELECT original_name, added_at, favorite, ocr_status, "
+            f"(SELECT GROUP_CONCAT(DISTINCT d.number) FROM bib_detections d "
+            f"WHERE d.photo_id=photos.id AND d.review!='rejected' AND {RANGE_SQL}) AS bibs "
+            f"FROM photos WHERE {where} ORDER BY {order}",
+            (*number_range(album), *args),
+        ).fetchall()
+        album_title = c.execute("SELECT name FROM albums WHERE id=?", (album,)).fetchone() if album is not None else None
+        album_name_value = album_title["name"] if album_title else ""
+        status_names = {"pending": "Pendiente", "processing": "En análisis", "done": "Analizada", "error": "Error"}
+
+        def spreadsheet_text(value):
+            # Preserve a literal string when a spreadsheet interprets the CSV.
+            if value.lstrip().startswith(("=", "+", "-", "@")) or value.startswith(("\t", "\r", "\n")):
+                return "'" + value
+            return value
+
+        def generate():
+            out = io.StringIO(newline="")
+            writer = csv.writer(out, delimiter=";")
+            yield "\ufeff"
+            writer.writerow(("Archivo", "Álbum", "Dorsales", "Favorita", "Análisis", "Fecha de importación UTC"))
+            for row in rows:
+                writer.writerow((
+                    spreadsheet_text(row["original_name"]), spreadsheet_text(album_name_value),
+                    ", ".join(sorted((row["bibs"] or "").split(","), key=lambda n: (len(n), n))),
+                    "Sí" if row["favorite"] else "No", status_names.get(row["ocr_status"], row["ocr_status"]), row["added_at"],
+                ))
+                if out.tell() >= 65536:
+                    yield out.getvalue()
+                    out.seek(0)
+                    out.truncate()
+            yield out.getvalue()
+
+        return StreamingResponse(generate(), media_type="text/csv",
+                                 headers={"Content-Disposition": 'attachment; filename="racefinder-catalogo.csv"', "Cache-Control": "no-store"})
+
     def zip_response(ids):
         ids = list(dict.fromkeys(ids))[:20000]
         if not ids:
@@ -629,6 +830,25 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
         return StreamingResponse(gen(), media_type="application/zip",
                                  headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
+    def publish_export(tmp, dest):
+        # Windows rename and POSIX hard links both fail if the destination exists.
+        if os.name == "nt":
+            tmp.rename(dest)
+            return
+        try:
+            os.link(tmp, dest)
+        except OSError as e:
+            if e.errno not in (errno.ENOSYS, errno.EOPNOTSUPP, errno.EPERM):
+                raise
+            # On filesystems without hard links, reserve the name before copying.
+            output = dest.open("xb")
+            try:
+                with output, tmp.open("rb") as source:
+                    shutil.copyfileobj(source, output)
+            except BaseException:
+                dest.unlink(missing_ok=True)
+                raise
+
     @app.post("/api/export/save")
     def export_save(body: SaveBody):
         """Copia los originales a una carpeta de tu disco (sin ZIP ni descarga del navegador).
@@ -660,26 +880,38 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
             stem, dot, ext = r["original_name"].rpartition(".")
             stem, ext = (stem, "." + ext) if dot else (r["original_name"], "")
             name, i = r["original_name"], 1
+            tmp = None
             try:
-                while (dest / name).exists():
-                    if (dest / name).stat().st_size == r["size"]:
-                        name = None   # mismo nombre y tamaño: ya está guardada
-                        break
-                    name = f"{stem}_{i}{ext}"; i += 1
-                if name is None:
-                    skipped += 1
-                    continue
-                tmp = dest / f".{name}.{uuid.uuid4().hex[:8]}.part"
-                try:
-                    shutil.copyfile(src, tmp)
-                    os.replace(tmp, dest / name)
-                finally:
-                    tmp.unlink(missing_ok=True)
-                saved += 1
+                while True:
+                    target = dest / name
+                    if target.exists() or target.is_symlink():
+                        try:
+                            same = (not target.is_symlink() and target.is_file()
+                                    and target.stat().st_size == r["size"] and imaging.file_sha256(target) == r["sha256"])
+                        except FileNotFoundError:
+                            continue  # the file disappeared while checking it
+                        if same:
+                            skipped += 1
+                            break
+                        name = f"{stem}_{i}{ext}"
+                        i += 1
+                        continue
+                    if tmp is None:
+                        tmp = dest / f".racefinder-{uuid.uuid4().hex}.part"
+                        shutil.copyfile(src, tmp)
+                    try:
+                        publish_export(tmp, target)
+                    except FileExistsError:
+                        continue  # retry the same name to check the newly created file
+                    saved += 1
+                    break
             except OSError as e:
                 failed.append(f"{r['original_name']}: {type(e).__name__}")
                 if e.errno == errno.ENOSPC:
                     break
+            finally:
+                if tmp is not None:
+                    tmp.unlink(missing_ok=True)
         set_pref("last_pick_dir", str(dest.parent if sub else dest))
         if body.open_after and saved + skipped:
             try:
@@ -718,32 +950,39 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
         return ",".join("?" * n)
 
     @app.get("/api/faces/for-bib")
-    def faces_for_bib(bib: str):
+    def faces_for_bib(bib: str, album: int | None = None):
         """Caras de las fotos donde se ha leído el dorsal; 'preselect' indica las que probablemente son del corredor."""
         require_faces()
         bib = bib.strip()
         if not BIB_RE.match(bib):
             raise HTTPException(422, "Dorsal inválido")
         c = db.conn()
-        ids, out = facemod.candidates_for_bib(c, bib, settings.doubtful_below)
+        require_album(c, album)
+        ids, out = facemod.candidates_for_bib(c, bib, settings.doubtful_below, album=album,
+                                              number_range=number_range(album) if album is not None else None)
         indexed = c.execute(f"SELECT COUNT(*) FROM photos WHERE face_status='done' AND id IN ({marks(len(ids)) or 'NULL'})", ids).fetchone()[0]
         return {"bib": bib, "photos": len(ids), "indexed": indexed,
                 "faces": [{k: v for k, v in f.items() if k != "emb"} for f in out[:60]]}
 
     @app.post("/api/faces/search")
-    def faces_search(body: FaceSearchBody, limit: int = 500):
+    def faces_search(body: FaceSearchBody, limit: int = 500, album: int | None = None):
         """Fotos con caras parecidas a las de referencia elegidas por el usuario. Puntuación = coseno, no probabilidad."""
         require_faces()
-        best = facemod.search(db.conn(), body.face_ids)
-        if not best and not face_rows(f"WHERE id IN ({marks(len(body.face_ids))})", body.face_ids):
+        c = db.conn()
+        require_album(c, album)
+        best = facemod.search(c, body.face_ids, album=album)
+        scope, args = album_clause(album, "photo_id")
+        if not best and not face_rows(f"WHERE id IN ({marks(len(body.face_ids))}) AND {scope}", (*body.face_ids, *args)):
             raise HTTPException(404, "No se encontraron esas caras")
         ids = sorted(best, key=lambda i: -best[i][0])[:max(1, min(limit, 5000))]
         photos, b = {}, {}
         if ids:
             photos = {r["id"]: r for r in db.conn().execute(f"SELECT * FROM photos WHERE id IN ({marks(len(ids))})", ids)}
-            b = bibs_for(ids)
+            b = bibs_for(ids, album)
         res = []
         for i in ids:
+            if i not in photos:
+                continue
             sim, r = best[i]
             res.append({**photo_row(photos[i], b[i]), "face": {
                 "face_id": r["id"], "similarity": round(sim, 3), "bbox": json.loads(r["bbox"]),
@@ -763,14 +1002,15 @@ def create_app(settings: Settings = None, reader=None, start_worker=True) -> Fas
     def faces_delete_all():
         """Borra todos los datos faciales derivados (vectores y recortes) y desactiva la función."""
         c = db.conn()
-        rows = c.execute("SELECT f.bbox, p.sha256 FROM faces f JOIN photos p ON p.id=f.photo_id").fetchall()
-        c.execute("DELETE FROM faces")
-        c.execute("UPDATE photos SET face_status='pending'")
-        c.execute("INSERT INTO settings(key,value) VALUES('faces_enabled','False') ON CONFLICT(key) DO UPDATE SET value='False'")
+        with write_transaction(c):
+            rows = c.execute("SELECT f.bbox, p.sha256 FROM faces f JOIN photos p ON p.id=f.photo_id").fetchall()
+            c.execute("DELETE FROM faces")
+            c.execute("UPDATE photos SET face_status='pending'")
+            c.execute("INSERT INTO settings(key,value) VALUES('faces_enabled','False') ON CONFLICT(key) DO UPDATE SET value='False'")
+            c.execute("DELETE FROM settings WHERE key='faces_consent_at'")
         for r in rows:
             x0, y0, x1, y1 = json.loads(r["bbox"])
             (settings.crops / r["sha256"][:2] / f"{r['sha256']}_{x0}_{y0}_{x1}_{y1}.jpg").unlink(missing_ok=True)
-        c.execute("DELETE FROM settings WHERE key='faces_consent_at'")
         c.execute("VACUUM")                          # reescribe el archivo sin las páginas liberadas
         c.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # y vacía el diario WAL, que conservaría copias
         return {"deleted": len(rows)}

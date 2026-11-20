@@ -12,6 +12,7 @@ import threading
 import traceback
 
 from .bibs import BibReader
+from .db import write_transaction
 from .faces import FaceEngine, ensure_models, models_ready, to_blob
 from .hardware import MAX_WORKERS, auto_workers, lower_priority
 from .imaging import original_path, make_preview
@@ -102,9 +103,13 @@ class Worker:
         """Toma atómicamente la siguiente foto pendiente (varios hilos nunca cogen la misma)."""
         col = "ocr" if kind == "ocr" else "face"
         with self._lock:
+            active_ids = tuple(pid for active_kind, pid in self._active if active_kind == kind)
+            claimed = f"AND id NOT IN ({','.join('?' * len(active_ids))})" if active_ids else ""
             rows = self.db.conn().execute(
                 f"UPDATE photos SET {col}_status='processing' WHERE id=(SELECT id FROM photos WHERE {col}_status='pending' "
-                f"ORDER BY {col}_attempts, id LIMIT 1) RETURNING id, sha256, ext, {col}_attempts AS attempts").fetchall()
+                f"{claimed} ORDER BY {col}_attempts, id LIMIT 1) RETURNING id, sha256, ext, {col}_attempts AS attempts",
+                active_ids,
+            ).fetchall()
             if not rows:
                 return None
             self._active.add((kind, rows[0]["id"]))
@@ -164,6 +169,15 @@ class Worker:
         except Exception:
             traceback.print_exc()
 
+    @staticmethod
+    def _still_processing(conn, row, kind):
+        # SQLite can reuse the id of a deleted photo. The hash and the
+        # processing state identify the work that may still be published.
+        return conn.execute(
+            f"SELECT 1 FROM photos WHERE id=? AND sha256=? AND {kind}_status='processing'",
+            (row["id"], row["sha256"]),
+        ).fetchone() is not None
+
     def _process_one(self) -> bool:
         c = self.db.conn()
         # las que ya han fallado alguna vez van detrás de las nuevas: una foto rota no frena el resto
@@ -171,30 +185,30 @@ class Worker:
         if not row:
             return False
         try:
-            dets = self.reader.read(original_path(self.settings, row["sha256"], row["ext"]))
-            c.execute("BEGIN")
-            # conserva revisiones manuales; reemplaza solo lo automático
-            c.execute("DELETE FROM bib_detections WHERE photo_id=? AND review='auto'", (row["id"],))
-            for d in dets:
-                c.execute("INSERT INTO bib_detections(photo_id,number,raw_text,confidence,bbox) VALUES(?,?,?,?,?)",
-                          (row["id"], d.number, d.raw_text, d.confidence, json.dumps(d.bbox)))
-            c.execute("UPDATE photos SET ocr_status='done', ocr_error=NULL, ocr_engine=?, ocr_attempts=0 WHERE id=?",
-                      (self.reader.engine_name, row["id"]))
-            c.execute("COMMIT")
+            reader = self.reader
+            dets = reader.read(original_path(self.settings, row["sha256"], row["ext"]))
+            with write_transaction(c):
+                if not self._still_processing(c, row, "ocr"):
+                    return True
+                # conserva revisiones manuales; reemplaza solo lo automático
+                c.execute("DELETE FROM bib_detections WHERE photo_id=? AND review='auto'", (row["id"],))
+                for d in dets:
+                    c.execute("INSERT INTO bib_detections(photo_id,number,raw_text,confidence,bbox) VALUES(?,?,?,?,?)",
+                              (row["id"], d.number, d.raw_text, d.confidence, json.dumps(d.bbox)))
+                c.execute("UPDATE photos SET ocr_status='done', ocr_error=NULL, ocr_engine=?, ocr_attempts=0 WHERE id=?",
+                          (reader.engine_name, row["id"]))
             try:  # el visor abre al instante: la vista previa queda lista tras el análisis
                 make_preview(self.settings, row["sha256"], row["ext"])
             except Exception:
                 pass
         except Exception as e:
-            try:
-                c.execute("ROLLBACK")
-            except Exception:
-                pass
-            traceback.print_exc()
             attempts = row["attempts"] + 1
             final = attempts >= MAX_ATTEMPTS or isinstance(e, FileNotFoundError)
-            c.execute("UPDATE photos SET ocr_status=?, ocr_attempts=?, ocr_error=? WHERE id=?",
-                      ("error" if final else "pending", attempts, f"{type(e).__name__}: {e}"[:300], row["id"]))
+            updated = c.execute("UPDATE photos SET ocr_status=?, ocr_attempts=?, ocr_error=? "
+                                "WHERE id=? AND sha256=? AND ocr_status='processing'",
+                                ("error" if final else "pending", attempts, f"{type(e).__name__}: {e}"[:300], row["id"], row["sha256"]))
+            if updated.rowcount:
+                traceback.print_exc()
         finally:
             self._done("ocr", row["id"])
         return True
@@ -219,23 +233,24 @@ class Worker:
         try:
             found = self._engine(i).index(original_path(self.settings, row["sha256"], row["ext"]))
             self.face_error = None
-            c.execute("BEGIN")
-            c.execute("DELETE FROM faces WHERE photo_id=?", (row["id"],))
-            for bbox, score, emb in found:
-                c.execute("INSERT INTO faces(photo_id,bbox,score,emb) VALUES(?,?,?,?)",
-                          (row["id"], json.dumps(bbox), score, to_blob(emb)))
-            c.execute("UPDATE photos SET face_status='done', face_attempts=0 WHERE id=?", (row["id"],))
-            c.execute("COMMIT")
+            with write_transaction(c):
+                if not self._still_processing(c, row, "face"):
+                    return True
+                if not self.faces_enabled():
+                    c.execute("UPDATE photos SET face_status='pending' WHERE id=?", (row["id"],))
+                    return True
+                c.execute("DELETE FROM faces WHERE photo_id=?", (row["id"],))
+                for bbox, score, emb in found:
+                    c.execute("INSERT INTO faces(photo_id,bbox,score,emb) VALUES(?,?,?,?)",
+                              (row["id"], json.dumps(bbox), score, to_blob(emb)))
+                c.execute("UPDATE photos SET face_status='done', face_attempts=0 WHERE id=?", (row["id"],))
         except Exception as e:
-            try:
-                c.execute("ROLLBACK")
-            except Exception:
-                pass
-            traceback.print_exc()
             attempts = row["attempts"] + 1
             final = attempts >= MAX_ATTEMPTS or isinstance(e, FileNotFoundError)
-            c.execute("UPDATE photos SET face_status=?, face_attempts=? WHERE id=?",
-                      ("error" if final else "pending", attempts, row["id"]))
+            updated = c.execute("UPDATE photos SET face_status=?, face_attempts=? WHERE id=? AND sha256=? AND face_status='processing'",
+                                ("error" if final else "pending", attempts, row["id"], row["sha256"]))
+            if updated.rowcount:
+                traceback.print_exc()
         finally:
             self._done("face", row["id"])
         return True

@@ -19,12 +19,22 @@ export default function SettingsPanel({ onChanged, onOpenEval, onWiped }) {
   const [wipe, setWipe] = useState(false)
   const [count, setCount] = useState(null)
   const ref = useRef(null)
+  const trigger = useRef(null)
+  const panel = useRef(null)
+
+  const close = () => {
+    setOpen(false)
+    trigger.current?.focus()
+  }
 
   useEffect(() => {
     if (!open) return
+    panel.current?.focus({ preventScroll: true })
     api.stats().then((st) => setCount(st.photos)).catch(() => {})
     api.settings().then((v) => { setS(v); setRange({ min: v.min_number || '', max: v.max_number === 99999 ? '' : v.max_number }) }).catch((e) => toast(e.message, 'error'))
-    const k = (e) => { if (e.key === 'Escape') setOpen(false) }
+    const k = (e) => {
+      if (e.key === 'Escape' && !e.target.closest?.('[aria-modal="true"]')) close()
+    }
     const c = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
     window.addEventListener('keydown', k); document.addEventListener('mousedown', c)
     return () => { window.removeEventListener('keydown', k); document.removeEventListener('mousedown', c) }
@@ -40,14 +50,18 @@ export default function SettingsPanel({ onChanged, onOpenEval, onWiped }) {
 
   return (
     <div className="relative" ref={ref}>
-      <button onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="dialog" aria-label="Ajustes" title="Ajustes"
-        className={`grid h-10 w-10 place-items-center rounded-xl border border-white/10 hover:bg-white/5 ${open ? 'bg-white/5' : ''}`}>
-        <Settings2 size={17} />
+      <button ref={trigger} onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="dialog" aria-label="Ajustes" title="Ajustes"
+        className={`rf-button rf-button-quiet ${open ? 'bg-white/5' : ''}`}>
+        <Settings2 size={18} aria-hidden />
       </button>
       {open && (
-        <div role="dialog" aria-label="Ajustes" className="absolute right-0 z-40 mt-2 w-[min(calc(100vw-2rem),380px)] space-y-5 rounded-2xl border border-white/10 bg-ink-900 p-5 text-sm shadow-2xl rf-fade">
-          {!s ? <div className="rf-skeleton h-40 rounded-lg" /> : (
-            <>
+        <div ref={panel} tabIndex={-1} role="dialog" aria-labelledby="ajustes-title" className="rf-settings text-sm rf-fade">
+          <div className="rf-settings-title">
+            <h2 id="ajustes-title" className="text-lg font-semibold">Ajustes</h2>
+            <button onClick={close} className="rf-button rf-button-quiet" aria-label="Cerrar ajustes"><X size={16} aria-hidden /></button>
+          </div>
+          {!s ? <div className="rf-skeleton m-4 h-40 rounded-lg" /> : (
+            <div className="space-y-5 p-4">
               <fieldset>
                 <legend className="font-medium">Lectura de dorsales</legend>
                 <div className="mt-2 space-y-1">
@@ -61,13 +75,13 @@ export default function SettingsPanel({ onChanged, onOpenEval, onWiped }) {
               </fieldset>
 
               <fieldset>
-                <legend className="font-medium">Dorsales de esta carrera</legend>
-                <p className="mt-1 text-xs text-ink-300">Si sabes el rango (p. ej. 1 a 2500), RaceFinder ignora carteles, años o kilómetros. No borra nada.</p>
+                <legend className="font-medium">Rango global de dorsales</legend>
+                <p className="mt-1 text-xs text-ink-300">Se usa en la biblioteca y en los álbumes sin un rango propio. Las correcciones manuales se conservan.</p>
                 <form className="mt-2 flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); applyRange() }}>
-                  <input aria-label="Dorsal mínimo" inputMode="numeric" placeholder="desde" value={range.min} onChange={(e) => setRange({ ...range, min: e.target.value.replace(/\D/g, '').slice(0, 5) })} className="w-20 rounded-lg border border-white/10 bg-ink-950 px-2.5 py-1.5" />
+                  <input aria-label="Dorsal mínimo" inputMode="numeric" placeholder="desde" value={range.min} onChange={(e) => setRange({ ...range, min: e.target.value.replace(/\D/g, '').slice(0, 5) })} className="min-w-0 flex-1 rounded-lg border border-white/10 bg-ink-950 px-2.5 py-1.5" />
                   <span className="text-ink-500">–</span>
-                  <input aria-label="Dorsal máximo" inputMode="numeric" placeholder="hasta" value={range.max} onChange={(e) => setRange({ ...range, max: e.target.value.replace(/\D/g, '').slice(0, 5) })} className="w-20 rounded-lg border border-white/10 bg-ink-950 px-2.5 py-1.5" />
-                  <button className="ml-auto rounded-lg bg-ink-100 px-3 py-1.5 font-medium text-ink-950 hover:bg-white">Aplicar</button>
+                  <input aria-label="Dorsal máximo" inputMode="numeric" placeholder="hasta" value={range.max} onChange={(e) => setRange({ ...range, max: e.target.value.replace(/\D/g, '').slice(0, 5) })} className="min-w-0 flex-1 rounded-lg border border-white/10 bg-ink-950 px-2.5 py-1.5" />
+                  <button className="shrink-0 rounded-lg bg-ink-100 px-3 py-1.5 font-medium text-ink-950 hover:bg-white">Aplicar</button>
                 </form>
               </fieldset>
 
@@ -108,7 +122,7 @@ export default function SettingsPanel({ onChanged, onOpenEval, onWiped }) {
                   <Trash2 size={13} aria-hidden /> Eliminar todas las fotos…
                 </button>
               </fieldset>
-            </>
+            </div>
           )}
         </div>
       )}
@@ -150,7 +164,7 @@ function DeleteAllDialog({ count, onClose, onDone }) {
         <p className="mt-2 text-sm text-ink-300">Tus archivos originales en el disco <strong className="text-ink-100">no se tocan</strong>: podrás volver a importarlos cuando quieras. Los ajustes se conservan.</p>
         <label htmlFor="wipe-confirm" className="mt-5 block text-sm">Escribe <strong className="font-mono text-red-300">ELIMINAR</strong> para confirmar</label>
         <input id="wipe-confirm" autoFocus autoComplete="off" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && ok && !busy) run() }}
-          className="mt-1.5 w-full rounded-lg border border-white/10 bg-ink-950 px-3 py-2 font-mono text-sm focus:border-red-400/60 focus:outline-none" />
+          className="mt-1.5 w-full rounded-lg border border-white/10 bg-ink-950 px-3 py-2 font-mono text-sm focus:border-red-400/60" />
         <div className="mt-5 flex justify-end gap-2">
           <button onClick={onClose} disabled={busy} className="rounded-lg px-4 py-2 text-sm text-ink-300 hover:text-white">Cancelar</button>
           <button onClick={run} disabled={!ok || busy} className="flex items-center gap-2 rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-400 disabled:opacity-40">

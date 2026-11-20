@@ -11,3 +11,9 @@ data_eval/
 frontend/e2e/.fixtures/
 frontend/e2e-results/
 frontend/test-results/
+
+# Configuración local de herramientas de desarrollo
+/.agents/
+/.claude/
+/.codex/
+/skills-lock.json

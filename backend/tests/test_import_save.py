@@ -93,11 +93,14 @@ def test_save_to_folder_no_overwrite_and_subfolder(client, tmp_path):
     # segunda vez: ya están, no se duplican ni se sobrescriben
     r2 = client.post("/api/export/save", json=body).json()
     assert (r2["saved"], r2["skipped"]) == (0, 4)
-    # mismo nombre pero otro contenido: se conserva el archivo del usuario
-    (dest / "dorsal-123" / "IMG_0000.jpg").write_bytes(b"x")
+    # El tamaño coincide, pero el contenido es distinto.
+    original = (src / "IMG_0000.jpg").read_bytes()
+    collision = bytes(len(original))
+    (dest / "dorsal-123" / "IMG_0000.jpg").write_bytes(collision)
     r3 = client.post("/api/export/save", json=body).json()
-    assert r3["saved"] == 1 and (dest / "dorsal-123" / "IMG_0000_1.jpg").exists()
-    assert (dest / "dorsal-123" / "IMG_0000.jpg").read_bytes() == b"x"
+    assert (r3["saved"], r3["skipped"]) == (1, 3)
+    assert (dest / "dorsal-123" / "IMG_0000_1.jpg").read_bytes() == original
+    assert (dest / "dorsal-123" / "IMG_0000.jpg").read_bytes() == collision
     assert not list((dest / "dorsal-123").glob(".*.part"))
 
 

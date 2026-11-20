@@ -260,12 +260,17 @@ def _rows(conn, where="", args=()):
     return conn.execute(f"SELECT id, photo_id, bbox, score, emb FROM faces {where}", args).fetchall()
 
 
-def candidates_for_bib(conn, bib, doubtful_below):
+def candidates_for_bib(conn, bib, doubtful_below, album=None, number_range=None):
     """Caras de las fotos en las que se leyó `bib`. Marca la asociada al dorsal y decide cuáles preseleccionar:
     solo las asociadas a lecturas fiables (o confirmadas) y que no desentonan con las demás."""
     import json
+    from .catalog import album_clause
+    scope, args = album_clause(album, "photo_id")
+    if number_range is not None:
+        scope += " AND (review='manual' OR CAST(number AS INTEGER) BETWEEN ? AND ?)"
+        args = (*args, *number_range)
     dets = conn.execute("SELECT photo_id, bbox, confidence, review FROM bib_detections "
-                        "WHERE number=? AND review!='rejected'", (bib,)).fetchall()
+                        f"WHERE number=? AND review!='rejected' AND {scope}", (bib, *args)).fetchall()
     by_photo = {}
     for d in dets:
         trusted = d["review"] in ("confirmed", "manual") or d["confidence"] >= doubtful_below
@@ -302,12 +307,14 @@ def _matrix(rows):
     return np.frombuffer(b"".join(r["emb"] for r in rows), dtype=np.float32).reshape(len(rows), EMB_DIM)
 
 
-def search(conn, face_ids, threshold=MATCH_THRESHOLD):
+def search(conn, face_ids, threshold=MATCH_THRESHOLD, album=None):
     """{photo_id: (similitud, fila de la cara)} con el coseno máximo contra cualquiera de las caras de referencia."""
     if not face_ids:
         return {}
-    refs = _rows(conn, f"WHERE id IN ({','.join('?' * len(face_ids))})", list(face_ids))
-    rows = _rows(conn)
+    from .catalog import album_clause
+    scope, args = album_clause(album, "photo_id")
+    refs = _rows(conn, f"WHERE id IN ({','.join('?' * len(face_ids))}) AND {scope}", (*face_ids, *args))
+    rows = _rows(conn, f"WHERE {scope}", args)
     if not refs or not rows:
         return {}
     sims = _matrix(rows) @ _matrix(refs).T

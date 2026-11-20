@@ -68,6 +68,7 @@ scene([("A", None, 1.0)], 3, "a_sin_dorsal.jpg")
 scene([("B", None, 1.0), ("A", None, 0.8)], 4, "b_y_a_sin_dorsal.jpg")
 scene([("B", "301", 1.1)], 5, "b_dorsal.jpg")
 scene([("B", None, 1.0)], 6, "b_sin_dorsal.jpg")
-# sin corredores con cara ni dorsal: debe seguir en el catálogo
-rng = random.Random(7); synth.background(rng, True).save(out / "solo_fondo.jpg", quality=92)
+# A flat image is a negative control for catalogue filters. The synthetic
+# race scenes above still exercise the real OCR on textured backgrounds.
+Image.new("RGB", (synth.W, synth.H), (115, 135, 155)).save(out / "solo_fondo.jpg", quality=92)
 print("fixtures:", sorted(p.name for p in out.glob("*.jpg")))

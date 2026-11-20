@@ -20,6 +20,14 @@ def head_hash(path) -> str:
         return hashlib.sha256(f.read(HEAD_BYTES)).hexdigest()
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 class InvalidImage(Exception):
     pass
 

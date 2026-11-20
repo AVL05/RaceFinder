@@ -2,8 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 /**
  * Rejilla virtualizada: con 10.000 fotos solo existen en la página las tarjetas visibles (± unas filas),
- * así el scroll y las actualizaciones siguen fluidos. Mismo aspecto que la rejilla CSS anterior:
- * 2 columnas en móvil y columnas de ≥220 px a partir de 640 px; tarjetas 3:2.
+ * así el scroll y las actualizaciones siguen fluidos. Las fotos y sus esqueletos
+ * comparten la misma geometría. Tarjetas 3:2 y dos columnas en móvil.
  */
 export default function VirtualGrid({ items, renderItem, label, onEndReached, onRangeChange, overscan = 3 }) {
   const ref = useRef(null)
@@ -20,7 +20,7 @@ export default function VirtualGrid({ items, renderItem, label, onEndReached, on
   }, [])
 
   const narrow = width < 640
-  const gap = narrow ? 6 : 10
+  const gap = narrow ? 8 : 12
   const cols = Math.max(1, narrow ? 2 : Math.floor((width + gap) / (220 + gap)))
   const itemW = width ? (width - gap * (cols - 1)) / cols : 0
   const itemH = Math.round(itemW * 2 / 3)

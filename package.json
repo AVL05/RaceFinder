@@ -12,6 +12,6 @@
     "test": "cd backend && .venv\\Scripts\\python.exe -m pytest -q"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || >=22.12.0"
   }
 }

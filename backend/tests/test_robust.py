@@ -122,3 +122,19 @@ def test_bulk_delete_and_large_id_list(client):
     assert r.json()["deleted"] == 30
     assert client.get("/api/stats").json()["photos"] == 0
     assert not list(client.app_.state.settings.originals.rglob("*.jpg"))
+
+
+def test_deleting_photo_during_ocr_cannot_attach_its_bib_to_a_reused_id(client, monkeypatch):
+    pid = upload(client, [make_image(seed=1)])[0]["id"]
+    worker = client.app_.state.worker
+
+    def read(_):
+        assert client.delete(f"/api/photos/{pid}").status_code == 200
+        assert upload(client, [make_image(seed=2)])[0]["id"] == pid
+        return [Detection("123", "123", 0.95, [1, 1, 50, 50])]
+
+    monkeypatch.setattr(worker.reader, "read", read)
+    assert worker._process_one()
+    photo = client.get(f"/api/photos/{pid}").json()
+    assert photo["bibs"] == []
+    assert photo["ocr_status"] == "pending"

@@ -15,27 +15,41 @@ const send = (method, url, body) =>
   fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
     .then(json, () => { throw new Error('No se puede contactar con RaceFinder.') })
 
+function query(path, params) {
+  const values = Object.entries(params).filter(([, value]) => value != null && value !== '')
+  return values.length ? `${path}?${new URLSearchParams(values)}` : path
+}
+
 export const api = {
-  stats: () => get('/api/stats'),
-  photos: (limit = 120, offset = 0, filter = 'all') => get(`/api/photos?limit=${limit}&offset=${offset}&filter=${filter}`),
-  search: (bib, similar = false) => get(`/api/search?bib=${encodeURIComponent(bib)}&mode=${similar ? 'similar' : 'exact'}`),
-  photo: (id) => get(`/api/photos/${id}`),
-  facesForBib: (bib) => get(`/api/faces/for-bib?bib=${encodeURIComponent(bib)}`),
-  faceSearch: (face_ids) => send('POST', '/api/faces/search', { face_ids }),
+  stats: (album) => get(query('/api/stats', { album })),
+  albums: () => get('/api/albums'),
+  createAlbum: (album) => send('POST', '/api/albums', album),
+  updateAlbum: (id, album) => send('PATCH', `/api/albums/${id}`, album),
+  deleteAlbum: (id) => send('DELETE', `/api/albums/${id}`),
+  changeAlbumPhotos: (id, ids, action) => send('POST', `/api/albums/${id}/photos`, { ids, action }),
+  setFavorites: (ids, favorite) => send('PUT', '/api/photos/favorites', { ids, favorite }),
+  photos: (limit = 120, offset = 0, { filter = 'all', album, filename, sort } = {}) =>
+    get(query('/api/photos', { limit, offset, filter, album, filename, sort })),
+  selection: (options) => get(query('/api/photos/selection', options)),
+  catalogCsv: (options) => query('/api/export/catalog.csv', options),
+  search: (bib, similar = false, album) => get(query('/api/search', { bib, mode: similar ? 'similar' : 'exact', album })),
+  photo: (id, album) => get(query(`/api/photos/${id}`, { album })),
+  facesForBib: (bib, album) => get(query('/api/faces/for-bib', { bib, album })),
+  faceSearch: (face_ids, album) => send('POST', query('/api/faces/search', { album }), { face_ids }),
   faceCropUrl: (id) => `/api/faces/${id}/crop`,
   deleteFaces: () => send('DELETE', '/api/faces'),
-  bibIndex: (limit = 400) => get(`/api/bibs/index?limit=${limit}`),
-  known: (items) => send('POST', '/api/photos/known', { items }),
+  bibIndex: (limit = 400, album) => get(query('/api/bibs/index', { limit, album })),
+  known: (items, album) => send('POST', query('/api/photos/known', { album }), { items }),
   // RaceFinder corre en tu equipo: el servidor lee y guarda en carpetas del disco directamente (sin subir ni descargar)
   pickFolder: (title) => send('POST', '/api/system/pick-folder', { title }),
-  importFolder: (path) => send('POST', '/api/import/folder', { path }),
+  importFolder: (path, album) => send('POST', '/api/import/folder', { path, album }),
   importStatus: () => get('/api/import/status'),
   importCancel: () => send('POST', '/api/import/cancel'),
   saveToFolder: (body) => send('POST', '/api/export/save', body),
-  upload: (files) => {
+  upload: (files, album) => {
     const fd = new FormData()
     files.forEach((f) => fd.append('files', f, f.name))
-    return fetch('/api/photos', { method: 'POST', body: fd }).then(json)
+    return fetch(query('/api/photos', { album }), { method: 'POST', body: fd }).then(json)
   },
   process: () => send('POST', '/api/process'),
   reanalyze: () => send('POST', '/api/process?reanalyze=true'),
@@ -97,7 +111,7 @@ export async function downloadPhotos(photos) {
 }
 
 // Sube en lotes (≤25 archivos / 40 MB) con 3 peticiones en paralelo.
-export async function uploadInBatches(files, onProgress, { batchBytes = 40 * 1024 * 1024, parallel = 3 } = {}) {
+export async function uploadInBatches(files, onProgress, { batchBytes = 40 * 1024 * 1024, parallel = 3, album } = {}) {
   const valid = files.filter((f) => ALLOWED.test(f.name))
   const tally = { added: 0, duplicate: 0, rejected: 0, skipped: files.length - valid.length, errors: [], total: valid.length }
   // 1) huella rápida (tamaño + SHA-256 de los primeros 64 KB) y pregunta al servidor cuáles ya tiene
@@ -117,7 +131,7 @@ export async function uploadInBatches(files, onProgress, { batchBytes = 40 * 102
       }
       await Promise.all(Array.from({ length: 8 }, hashOne))
       const known = []
-      for (let k = 0; k < fps.length; k += 2000) known.push(...(await api.known(fps.slice(k, k + 2000))).known)
+      for (let k = 0; k < fps.length; k += 2000) known.push(...(await api.known(fps.slice(k, k + 2000), album)).known)
       pending = valid.filter((_, i) => !known[i])
       tally.duplicate += valid.length - pending.length
     } catch { pending = valid }  // si falla la comprobación, se sube todo: el servidor sigue detectando duplicados
@@ -142,7 +156,7 @@ export async function uploadInBatches(files, onProgress, { batchBytes = 40 * 102
       let lastErr = null
       for (let attempt = 0; attempt < 5; attempt++) {
         try {
-          const { results } = await api.upload(batch)
+          const { results } = await api.upload(batch, album)
           results.forEach((r) => { tally[r.status]++; if (r.error) tally.errors.push(`${r.name}: ${r.error}`) })
           lastErr = null
           break

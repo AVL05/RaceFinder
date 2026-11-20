@@ -9,13 +9,13 @@ Corre como tarea en segundo plano: sobrevive a recargar la página y se puede ca
 import errno
 import os
 import shutil
-import sqlite3
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import imaging
+from .catalog import album_clause, attach_photo, register_photo
 
 MIN_FREE_BYTES = 2 * 1024 ** 3
 MAX_ERRORS = 200
@@ -55,7 +55,7 @@ class ImportJob:
 
     @staticmethod
     def _blank():
-        return {"running": False, "phase": "idle", "path": None, "total": 0, "done": 0, "added": 0, "duplicate": 0,
+        return {"running": False, "phase": "idle", "path": None, "album": None, "total": 0, "done": 0, "added": 0, "duplicate": 0,
                 "rejected": 0, "linked": 0, "copied": 0, "errors": [], "cancelled": False, "fatal": None}
 
     def status(self):
@@ -67,7 +67,7 @@ class ImportJob:
     def cancel(self):
         self._cancel.set()
 
-    def start(self, path):
+    def start(self, path, album=None):
         root = Path(path).expanduser()
         if not root.is_absolute():
             raise ValueError("La ruta debe ser absoluta")
@@ -77,8 +77,8 @@ class ImportJob:
             if self._state["running"]:
                 raise RuntimeError("Ya hay una importación en curso")
             self._cancel.clear()
-            self._state = {**self._blank(), "running": True, "phase": "scanning", "path": str(root)}
-        self._thread = threading.Thread(target=self._run, args=(root,), daemon=True, name="importer")
+            self._state = {**self._blank(), "running": True, "phase": "scanning", "path": str(root), "album": album}
+        self._thread = threading.Thread(target=self._run, args=(root, album), daemon=True, name="importer")
         self._thread.start()
 
     # -- interno --
@@ -92,13 +92,13 @@ class ImportJob:
             if len(self._state["errors"]) < MAX_ERRORS:
                 self._state["errors"].append(msg)
 
-    def _run(self, root):
+    def _run(self, root, album):
         try:
             files = scan(root, self.settings.allowed_ext, self._cancel.is_set)
             with self._lock:
                 self._state.update(total=len(files), phase="importing")
             with ThreadPoolExecutor(self.threads, thread_name_prefix="import") as ex:
-                for _ in ex.map(self._one, files):
+                for _ in ex.map(lambda path: self._one(path, album), files):
                     pass
         except Exception as e:  # nunca deja la tarea 'running' para siempre
             traceback.print_exc()
@@ -112,7 +112,7 @@ class ImportJob:
             except Exception:
                 traceback.print_exc()
 
-    def _one(self, path: Path):
+    def _one(self, path: Path, album=None):
         if self._cancel.is_set():
             return
         s, c = self.settings, self.db.conn()
@@ -123,7 +123,9 @@ class ImportJob:
             try:
                 size = path.stat().st_size
                 # ya importada (mismo tamaño y mismos primeros 64 KB): no se lee entera
-                if c.execute("SELECT 1 FROM photos WHERE size=? AND head_hash=?", (size, imaging.head_hash(path))).fetchone():
+                scope, args = album_clause(album, "id")
+                if c.execute(f"SELECT 1 FROM photos WHERE size=? AND head_hash=? AND {scope}",
+                             (size, imaging.head_hash(path), *args)).fetchone():
                     self._bump(duplicate=1)
                     return
                 meta = imaging.ingest_path(s, path)
@@ -133,18 +135,17 @@ class ImportJob:
             except OSError as e:
                 self._bump(rejected=1); self._err(f"{name}: no se pudo leer ({type(e).__name__})")
                 return
-            if c.execute("SELECT 1 FROM photos WHERE sha256=?", (meta["sha256"],)).fetchone():
+            existing = c.execute("SELECT id FROM photos WHERE sha256=?", (meta["sha256"],)).fetchone()
+            if existing:
+                attach_photo(c, album, existing["id"])
                 self._bump(duplicate=1)
                 return
             if shutil.disk_usage(s.data_dir).free < MIN_FREE_BYTES:
                 raise OSError(errno.ENOSPC, "disco lleno")
             created = imaging.commit_from_path(s, meta)
             imaging.make_thumb(s, meta["sha256"], meta["ext"])
-            c.execute("INSERT INTO photos(sha256,original_name,ext,size,width,height,head_hash) VALUES(?,?,?,?,?,?,?)",
-                      (meta["sha256"], name, meta["ext"], meta["size"], meta["width"], meta["height"], meta["head"]))
-            self._bump(added=1, **({created: 1} if created else {}))
-        except sqlite3.IntegrityError:
-            self._bump(duplicate=1)         # otra tarea paralela la acaba de añadir
+            _, added = register_photo(c, meta, name, album)
+            self._bump(**({"added": 1} if added else {"duplicate": 1}), **({created: 1} if created else {}))
         except Exception as e:
             if meta and created:            # sin fila en la BD nadie la borraría: no se dejan huérfanos
                 imaging.original_path(s, meta["sha256"], meta["ext"]).unlink(missing_ok=True)

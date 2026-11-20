@@ -58,7 +58,7 @@ export function ConsentDialog({ onClose, onEnabled }) {
  * Bajo los resultados de un dorsal: propone las caras que aparecen encima de ese dorsal,
  * deja que la persona confirme cuáles son suyas y busca fotos con caras parecidas.
  */
-export function FaceSection({ q, stats, onResults, onEnabled }) {
+export function FaceSection({ q, album, stats, onResults, onEnabled }) {
   const [consent, setConsent] = useState(false)
   const [cand, setCand] = useState(null)
   const [chosen, setChosen] = useState(() => new Set())
@@ -75,13 +75,13 @@ export function FaceSection({ q, stats, onResults, onEnabled }) {
   useEffect(() => {
     if (!enabled || !q) return
     let live = true
-    api.facesForBib(q).then((r) => {
+    api.facesForBib(q, album).then((r) => {
       if (!live) return
       setCand(r)
       if (!touched.current) setChosen(new Set(r.faces.filter((f) => f.preselect).map((f) => f.id)))
     }).catch(() => {})
     return () => { live = false }
-  }, [q, enabled, doneKey])
+  }, [q, album, enabled, doneKey])
 
   // búsqueda automática con las caras elegidas
   const key = useMemo(() => [...chosen].sort().join(','), [chosen])
@@ -91,13 +91,13 @@ export function FaceSection({ q, stats, onResults, onEnabled }) {
     let live = true
     setSearching(true)
     const t = setTimeout(() => {
-      api.faceSearch(key.split(',').map(Number))
+      api.faceSearch(key.split(',').map(Number), album)
         .then((r) => { if (live) { onResults(r.results); setCount(r.count) } })
         .catch(() => { if (live) onResults(null) })
         .finally(() => { if (live) setSearching(false) })
     }, 250)
     return () => { live = false; clearTimeout(t) }
-  }, [key, enabled, doneKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, album, enabled, doneKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!enabled) {
     return (

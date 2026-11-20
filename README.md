@@ -6,13 +6,16 @@ Encuentra tus fotos de una carrera por número de dorsal. Arrastras la carpeta d
 
 ## Arrancar
 
-Requisitos: Windows 10/11, [Node.js 20+](https://nodejs.org), pnpm y Python 3.10+ (`winget install Python.Python.3.12 --scope user`).
+Requisitos recomendados para Windows 10/11: Node.js 24, Python 3.12 y pnpm 12.16.1. El proyecto admite Node.js 20.19+ dentro de la rama 20 y versiones desde 22.12. Puedes instalar Python con `winget install Python.Python.3.12 --scope user` y pnpm con `npm install -g pnpm@12.16.1`.
 
 ```powershell
-pnpm run dev
+git clone https://github.com/AVL05/RaceFinder.git
+cd RaceFinder
+pnpm install --frozen-lockfile
+pnpm start
 ```
 
-La primera vez crea el entorno de Python e instala todo lo necesario (unos minutos); las siguientes arranca en segundos. Se abre el navegador en `http://127.0.0.1:5173`. Para salir, `Ctrl+C` en la terminal.
+La primera vez RaceFinder prepara el entorno de Python. Abre la dirección local que muestra la terminal si el navegador no se abre automáticamente. Para salir, pulsa `Ctrl+C` en la terminal. Si quieres arrancar por primera vez sin instalar los paquetes opcionales de GPU, ejecuta `$env:RACEFINDER_GPU = '0'` antes de `pnpm start`.
 
 Otras órdenes:
 
@@ -22,7 +25,7 @@ Otras órdenes:
 | `pnpm run dev --network` | Desarrollo con acceso desde otros dispositivos de la red local. |
 | `pnpm start` | Uso normal sin recarga: compila la interfaz y la sirve desde la API en un solo puerto. |
 | `pnpm test` | Tests del backend. |
-| `pnpm --dir frontend exec playwright test` | Pruebas E2E en Chromium (biblioteca aislada). |
+| `pnpm --dir frontend exec playwright test` | Pruebas E2E en una biblioteca aislada. Instala Chromium con `pnpm --dir frontend exec playwright install chromium` antes de la primera ejecución. |
 
 ### Acceso desde otro dispositivo
 
@@ -38,7 +41,23 @@ El equipo donde ejecutas RaceFinder almacena las fotos y la base de datos, anali
 2. **Espera o busca ya**: la barra superior muestra cuántas fotos quedan por leer y el tiempo estimado. Puedes buscar mientras tanto; los resultados se actualizan solos.
 3. **Busca tu dorsal**: escribe el número (atajo `/`). Arriba salen las coincidencias seguras; debajo, *Por revisar* (lectura poco clara o un dígito distinto si activas *números parecidos*).
 4. **Revisa**: abre una foto para verla en grande, ampliar al 100 % con un clic, confirmar o descartar dorsales y añadir los que falten.
-5. **Guarda**: *Guardar las N fotos en una carpeta* abre el selector de carpetas del sistema y copia los originales intactos allí, en una subcarpeta `dorsal-123`, y abre la carpeta. Sin ZIP ni descargas del navegador; no sobrescribe nada. También puedes seleccionar las que quieras (clic en el círculo, `Mayús`+clic para un rango). El ZIP sigue disponible.
+5. **Guarda**: *Guardar N fotos* abre el selector de carpetas del sistema y copia los originales intactos a una subcarpeta `dorsal-123`. Puedes seleccionar fotos concretas con el círculo de cada miniatura, extender la selección con `Mayús`+clic o descargar los originales como ZIP.
+
+### Organizar varias carreras
+
+1. Pulsa **Nuevo álbum** y, si conoces los dorsales válidos de esa carrera, indica su rango. Puedes cambiarlo después desde **Editar álbum**.
+2. Con el álbum seleccionado, importa la carpeta o añade las fotos. Si ya estaban en RaceFinder, selecciona las que quieras en **Toda la biblioteca** y usa **Organizar selección en álbumes**. Una foto puede estar en varios álbumes y se almacena una sola vez.
+3. Busca el dorsal dentro del álbum. El índice, los resultados por dorsal y la búsqueda por cara usan el álbum activo. Puedes guardar la dirección del navegador para volver a ese álbum y dorsal en esta instalación.
+
+Al quitar fotos de un álbum o eliminar el álbum, las fotos siguen disponibles en la biblioteca. **Quitar de RaceFinder** elimina del catálogo la foto y sus pertenencias en todos los álbumes.
+
+### Buscar, revisar y preparar la entrega
+
+- **Nombre de archivo y orden**. Localiza un archivo y ordena por fecha de importación o por nombre.
+- **Favoritas**. Usa la estrella de una miniatura, del visor o de la selección para guardar tus favoritas y volver a ellas con su filtro.
+- **Por revisar**. Reúne fotos con un dorsal automático de baja confianza. En el visor puedes confirmar o descartar la lectura y añadir dorsales que falten.
+- **Selección completa**. *Seleccionar todas* en la galería incluye las fotos de todo el filtro, también las que aún no se han cargado en pantalla. Admite hasta 20.000 fotos por selección.
+- **Catálogo CSV**. Descarga una fila por foto del filtro activo, con el nombre de archivo, el álbum activo, los dorsales, la marca de favorita, el estado de análisis y la fecha de importación UTC.
 
 ### Búsqueda por cara (opcional)
 
@@ -57,7 +76,7 @@ Atajos en el visor: `←` `→` navegar · `S` seleccionar · `Z` o clic ampliar
 ### Ajustes
 
 - **Lectura de dorsales**: *Rápido*, *Equilibrado* (recomendado) o *A fondo* (para fotos con mucha gente lejos; más lento).
-- **Dorsales de esta carrera**: si conoces el rango (p. ej. 1–2500), se ignoran carteles, años o kilómetros que el lector confunda con dorsales.
+- **Rango global de dorsales**. Se usa en toda la biblioteca y en los álbumes que no tienen rango propio. Las correcciones manuales se conservan fuera del rango.
 - **Volver a leer todas las fotos** tras cambiar el modo. Tus correcciones manuales se conservan.
 - **Eliminar todas las fotos**: vacía la biblioteca de una vez (copias, miniaturas, dorsales, datos faciales y etiquetas). Pide escribir `ELIMINAR`. Tus archivos originales en el disco y los ajustes no se tocan.
 
@@ -112,3 +131,9 @@ backend\.venv\Scripts\python.exe backend\tools\gpu_bench.py "RUTA_A_TUS_FOTOS"  
 `RACEFINDER_FAST_RESIZE=1` reduce las fotos con `cv2.resize` en vez de PIL Lanczos (3-9× más rápido en esa fase, que con GPU pasa a ser lo que más pesa). Cambia ligeramente los píxeles y puede mover alguna lectura límite, por eso está apagado por defecto: `gpu_bench.py` compara dorsales y caras con y sin él sobre tus fotos para que decidas.
 
 El selector de carpetas usa `tkinter` (en Linux: `sudo apt install python3-tk`). Si no está disponible, *Carpeta* cae al selector del navegador.
+
+## Contribuir
+
+Puedes reportar un problema, proponer una mejora o enviar un pull request desde tu fork. [Incidencias de RaceFinder](https://github.com/AVL05/RaceFinder/issues) · [Guía de contribución](CONTRIBUTING.md)
+
+El código de RaceFinder usa la licencia MIT. Los componentes de terceros tienen sus propios avisos. [Licencia de RaceFinder](LICENSE) · [Avisos de terceros](THIRD_PARTY_NOTICES.md)
