@@ -1,4 +1,13 @@
-# RaceFinder
+# Diseño de RaceFinder
+
+## Mantener la interfaz
+
+RaceFinder prioriza tres tareas según el estado de la biblioteca. En una biblioteca vacía, el primer paso es la importación. Con fotos importadas, la galería, los álbumes y el índice permiten elegir el conjunto que se va a revisar. En resultados, el dorsal, sus evidencias y el acceso al original orientan la selección y la exportación. [Guía de uso](docs/USER_GUIDE.md)
+
+- Mantén claras las acciones disponibles en la biblioteca global y en un álbum activo. Conserva el contexto del álbum al buscar, filtrar y retroceder.
+- Distingue coincidencia segura, lectura dudosa y parecido facial con texto y jerarquía visual. Usa el recorte o las marcas como evidencia que se pueda revisar.
+- Conserva los nombres accesibles, el foco visible y los atajos del visor. Comprueba los estados de carga, error, vacío y selección con teclado y a ancho móvil.
+- Usa los estilos de `frontend/src/index.css` y componentes existentes del catálogo, álbumes y visor antes de añadir variantes. [Estilos](frontend/src/index.css) · [Arquitectura](docs/ARCHITECTURE.md)
 
 ## Dirección visual
 
@@ -12,7 +21,7 @@ El público son corredores y fotógrafos que necesitan localizar, revisar y guar
 | Hoja de contactos | La portada abre con una cuadrícula continua de imágenes y deja el índice en segundo plano. Favorece el recorrido visual de un fotógrafo, con menos orientación para quien todavía debe importar fotos. |
 | Cronometraje | La portada sigue la secuencia importar, analizar y encontrar, con estados y cifras en primer plano. Ayuda durante un análisis largo, con más densidad que la necesaria para recorrer una biblioteca ya procesada. |
 
-Perfil Premium y ambición Expressive. El gesto distintivo es elegir un dorsal del índice y verlo ampliado como ficha de resultados, con la búsqueda conservada en la URL. El corte de lectura sobre el dorsal de la foto ilustrativa anticipa ese gesto en la biblioteca vacía.
+El gesto distintivo es elegir un dorsal del índice y verlo ampliado como ficha de resultados, con la búsqueda conservada en la URL. El corte de lectura sobre el dorsal de la foto ilustrativa anticipa ese gesto en la biblioteca vacía.
 
 ## Sistema
 
@@ -25,9 +34,9 @@ Perfil Premium y ambición Expressive. El gesto distintivo es elegir un dorsal d
 
 ## Criterios de aceptación
 
-La portada muestra importación, ejemplo y privacidad. El índice lleva al dorsal correcto con teclado y ratón. Los resultados distinguen coincidencias seguras, dudosas y faciales. El encabezado permite importar y controlar el análisis en móvil. Filtros, selección, visor, configuración y exportación conservan sus flujos. Se comparan los mismos estados antes y después a 375, 768, 1.440 y 1.920 px.
+La portada muestra importación, ejemplo y privacidad. El índice lleva al dorsal correcto con teclado y ratón. Los resultados distinguen coincidencias seguras, dudosas y faciales. El encabezado permite importar y controlar el análisis en móvil. Filtros, selección, visor, configuración y exportación conservan sus flujos. Para revisar un cambio que afecte a la composición, comprueba los estados afectados a 375, 768, 1.440 y 1.920 px.
 
-## Verificación del rediseño inicial
+## Verificación histórica del rediseño inicial
 
 | Control | Resultado | Evidencia |
 | --- | --- | --- |

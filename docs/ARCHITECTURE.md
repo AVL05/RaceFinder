@@ -1,57 +1,68 @@
 # Arquitectura
 
+RaceFinder se ejecuta en un solo equipo. El navegador presenta la interfaz y el proceso Python mantiene la biblioteca, sirve archivos y ejecuta los modelos locales.
+
+```mermaid
+flowchart LR
+    UI["Navegador · React y Vite"] -->|HTTP /api| API["FastAPI"]
+    API --> DB[("SQLite en modo WAL")]
+    API --> FS["Archivos de la biblioteca"]
+    API --> Import["Importación en segundo plano"]
+    Import --> FS
+    Import --> DB
+    API --> Worker["Trabajadores de análisis"]
+    Worker --> DB
+    Worker --> FS
+    Worker --> OCR["RapidOCR y ONNX Runtime"]
+    Worker --> Face["YuNet y SFace opcionales"]
 ```
-Navegador (React + Vite + Tailwind)
-   │  fetch /api/*   (en desarrollo Vite proxifica; en producción FastAPI sirve frontend/dist)
-   ▼
-FastAPI (127.0.0.1:8000) ── SQLite (WAL) ── data/{originals,thumbs,tmp}
-   │
-   └─ Worker (hilo único) ── BibReader ── RapidOCR (ONNX Runtime)
-```
 
-## Estructura
-```
-backend/app/  config.py  db.py  imaging.py  bibs.py  worker.py  main.py
-backend/tests/  unit, API y OCR real sobre imágenes sintéticas
-frontend/src/  App.jsx  Lightbox.jsx  api.js  tests
-data/  (ignorado por git) originals/ab/<sha256>.jpg · thumbs/ · tmp/ · racefinder.sqlite3
-```
+Con `pnpm start`, FastAPI sirve la interfaz compilada y la API desde el mismo origen. Con `pnpm run dev`, Vite sirve la interfaz y reenvía `/api` al proceso FastAPI. El iniciador prepara `backend/.venv`, busca puertos libres y configura el entorno de los procesos. En desarrollo reinicia el proceso Python cuando detecta cambios en sus archivos fuente. [Arranque y configuración](OPERATIONS.md)
 
-## Flujo de importación
-1. El navegador envía lotes (≤25 ficheros / 40 MB) a `POST /api/photos`.
-2. Cada fichero se escribe en `tmp/` con límite de tamaño, se hashea y se valida con Pillow (formato real, píxeles máximos).
-3. Se mueve a `originals/<sha[:2]>/<sha>.<ext>` sin recodificar. Si el hash existe, se marca duplicado. El nombre del cliente solo se guarda para mostrarlo: **nunca construye rutas**.
-4. Se genera la miniatura y se inserta la fila con `ocr_status='pending'`; se despierta al worker.
+## Mapa del repositorio
 
-## Pipeline de dorsales (`bibs.py`)
-Sin modelo de dorsales dedicado (no hay uno libre y fiable verificado). Estrategia: DBNet detecta regiones de texto en la imagen reducida a 1920 px y, si la foto es grande, en un mosaico 2×2 solapado sobre una versión de ~3200 px; el reconocedor lee cada región; se filtran tokens de 1–5 dígitos con caja de tamaño/proporción plausibles; se fusionan duplicados por IoU. Letras confundibles (O, I, S, B…) solo se convierten si el token ya es mayoritariamente numérico. Se guarda la caja en coordenadas de la imagen original como evidencia.
+| Ruta | Responsabilidad |
+| --- | --- |
+| [scripts/dev.mjs](../scripts/dev.mjs) | Arranque, instalación de requisitos, selección de puertos y ciclo de vida de procesos. |
+| [backend/app/main.py](../backend/app/main.py) | API, validación, consultas, exportación y composición de componentes. |
+| [backend/app/db.py](../backend/app/db.py), [catalog.py](../backend/app/catalog.py) | Esquema, migraciones, transacciones y asociaciones de álbumes. |
+| [backend/app/importer.py](../backend/app/importer.py), [imaging.py](../backend/app/imaging.py) | Importación desde disco, huellas, validación y derivados de imagen. |
+| [backend/app/worker.py](../backend/app/worker.py), [bibs.py](../backend/app/bibs.py), [faces.py](../backend/app/faces.py) | Cola, OCR, detección y búsqueda facial. |
+| [backend/app/hardware.py](../backend/app/hardware.py), [device.py](../backend/app/device.py) | Capacidad del equipo y selección de proveedores de cálculo. |
+| [frontend/src](../frontend/src) | Interfaz, catálogo, visor, ajustes, evaluación y cliente HTTP. |
+| [backend/tests](../backend/tests), [frontend/e2e](../frontend/e2e), [backend/tools](../backend/tools) | Pruebas y utilidades de evaluación y rendimiento. |
 
-Limitación conocida: sin segmentar corredores, un número de otro texto (cartel, reloj) puede aparecer como dorsal; se mitiga con revisión manual. Mejora prevista: detector de personas/torso para acotar la búsqueda y un clasificador de "es dorsal".
+## De la importación al análisis
 
-## Esquema SQLite
-- `photos(id, sha256 UNIQUE, original_name, ext, size, width, height, added_at, favorite, ocr_status, ocr_error, ocr_engine)`
-- `albums(id, name, name_key UNIQUE, min_number, max_number)` y `album_photos(album_id, photo_id)`. Una foto puede aparecer en varios álbumes. Borrar una foto o un álbum elimina sus asociaciones mediante claves foráneas.
-- `bib_detections(id, photo_id→photos ON DELETE CASCADE, number, raw_text, confidence, bbox JSON, review auto|confirmed|rejected|manual)`
-- `jobs(...)` reservada para cola multi-tipo (Fase 2); hoy el estado de la cola se deriva de `photos.ocr_status`.
+1. La importación por navegador envía archivos por lotes a la API. La importación por carpeta recorre el árbol en el servidor y puede enlazar un original en el mismo volumen. Usa copia cuando el enlace falla.
+2. La aplicación valida formato y tamaño con Pillow, usa SHA-256 para una identidad estable y guarda el original en `originals/<prefijo>/<sha256>.<ext>`. Una huella rápida de tamaño y los primeros 64 KiB permite omitir archivos ya vistos al reanudar una carga web. El nombre original se conserva como metadato.
+3. Al registrar la foto se genera una miniatura y se pone el análisis en cola. Las vistas previas y los recortes se crean cuando hacen falta.
+4. Los trabajadores reclaman fotos mediante una actualización atómica en SQLite. Cada foto conserva su estado e intentos de OCR y caras. Los trabajos interrumpidos en `processing` vuelven a `pending` al reiniciar. La pausa deja terminar el trabajo en curso y detiene nuevas asignaciones.
+5. Cada trabajador analiza una foto, guarda resultados y actualiza su estado. Al repetir OCR se sustituyen las detecciones automáticas, conservando las decisiones humanas.
 
-## Cola, cancelación y reanudación
-El estado vive en SQLite. Un hilo toma la foto `pending` más antigua. Cancelar termina la foto en curso y pausa. Al arrancar, `processing` vuelve a `pending`. Reprocesar reemplaza solo detecciones `auto`, conservando revisiones manuales.
+Los estados de catálogo y análisis sobreviven a los reinicios. La pausa y el progreso detallado de la importación viven en memoria. Tras reiniciar una importación, los archivos que ya quedaron registrados se pueden deduplicar.
 
-## API
-`GET /api/health|stats|photos|photos/{id}/thumb|photos/{id}/original|search?bib=&mode=exact|similar&min_conf=` · `POST /api/photos|process|process/cancel|photos/{id}/reprocess|photos/{id}/bibs|export` · `PATCH /api/bibs/{id}` · `DELETE /api/photos/{id}`.
+## Dorsales y caras
 
-## Seguridad
-Escucha solo en 127.0.0.1; `TrustedHostMiddleware` (anti DNS-rebinding); CORS limitado a localhost; validación por contenido; rutas derivadas solo de SHA-256 validado; temporales `.part` eliminados en error y al apagar; sin telemetría ni peticiones salientes en tiempo de ejecución (RapidOCR incluye sus modelos en el paquete). No hay autenticación: es una app de un solo usuario local.
+El OCR lee la imagen reducida y, según el modo y el tamaño, zonas solapadas de la foto. Normaliza confusiones de caracteres en tokens plausibles, filtra cajas y fusiona detecciones solapadas. La biblioteca conserva coordenadas sobre la imagen orientada, número, texto bruto, confianza y revisión. Escenas con relojes o carteles pueden producir falsos positivos. La interfaz permite revisar el recorte y confirmar, descartar o añadir un dorsal.
 
-## Arranque (`scripts/dev.mjs`)
-`pnpm run dev` crea `backend/.venv` si falta, reinstala dependencias de Python solo cuando cambia `requirements.txt`, instala las del frontend si faltan, busca puertos libres (API desde 8000, interfaz desde 5173), arranca uvicorn y Vite y abre el navegador. El backend se reinicia al guardar un `.py` mediante un vigilante propio (el `--reload` de uvicorn se queda colgado en Windows cuando el proceso no tiene consola). `RACEFINDER_DEV=1` hace que la API no sirva `frontend/dist`. `pnpm start` compila la interfaz y la sirve desde la API.
+El análisis facial requiere activación con consentimiento. YuNet detecta caras y SFace produce los vectores de similitud. Para sugerir referencias se usa la geometría de la caja facial respecto al dorsal, la confianza de lectura y la coherencia entre referencias. El usuario puede corregir esa selección. El buscador compara vectores y devuelve similitud coseno. El conjunto de fotos devuelto se puede limitar a un álbum. [Uso y privacidad](USER_GUIDE.md#buscar-por-cara) · [Modelos y licencias](../THIRD_PARTY_NOTICES.md)
 
-## Endpoints añadidos en la v0.2
-`GET /api/photos?filter=with_bib|no_bib|pending|error`, `GET /api/photos/{id}`, `GET /api/bibs/index` (dorsales con nº de fotos), `GET /api/bibs/{id}/crop` (recorte del dorsal, cacheado en `data/crops`), `POST /api/photos/delete`, `POST /api/export/download` (ZIP en streaming desde formulario, sin pasar por disco ni memoria del navegador).
+## Datos y ámbitos
 
-## Catálogo y álbumes
+| Tablas | Contenido |
+| --- | --- |
+| `photos` | Identidad por hash, nombre, dimensiones, favorito, tipo de archivo y estados del análisis. |
+| `albums` y `album_photos` | Relación de muchos a muchos y rango opcional por álbum. |
+| `bib_detections` | Lecturas automáticas, manuales y sus revisiones. |
+| `faces` | Detecciones, cajas, calidad y vectores faciales asociados a una foto. |
+| `settings` | Preferencias persistentes de la biblioteca y fecha del consentimiento facial. |
+| `gt_labels` y `eval_runs` | Etiquetas de referencia e historial de evaluación. |
 
-- `GET/POST /api/albums`, `PATCH/DELETE /api/albums/{id}` y `POST /api/albums/{id}/photos` gestionan el catálogo, los rangos y las asociaciones sin copiar originales.
-- El parámetro opcional `album` delimita fotos, estadísticas, índice, coincidencias y referencias faciales. La carga por navegador usa el mismo parámetro. La importación nativa acepta `album` en el cuerpo. Se valida el hash completo para asignar a otro álbum una foto que solo coincide en la huella rápida.
-- `GET /api/photos`, `GET /api/photos/selection` y `GET /api/export/catalog.csv` comparten filtros, nombre y orden. `PUT /api/photos/favorites` aplica un estado de favorito a uno o varios identificadores.
-- La base existente incorpora los álbumes y las favoritas al arrancar. Los rangos por álbum se aplican al consultar resultados. La cola de análisis sigue siendo compartida.
+Cada original se almacena una vez por contenido y puede aparecer en varios álbumes. El rango de dorsal filtra las consultas de dorsales. Los dorsales añadidos a mano pueden quedar fuera del rango. Al borrar un álbum se eliminan sus asociaciones. Al borrar una foto se eliminan sus asociaciones y datos derivados de catálogo. [Datos y restauración](OPERATIONS.md#datos-y-copias-de-seguridad)
+
+## Perímetro local
+
+El iniciador enlaza FastAPI a `127.0.0.1`. FastAPI valida el host y configura CORS para los orígenes locales previstos. El modo de red expone Vite como entrada en una LAN y reenvía solicitudes a la API local. RaceFinder carece de autenticación, separación por usuario y control de acceso por álbum.
+
+La instalación inicial obtiene dependencias y puede obtener paquetes de GPU. La función facial descarga los modelos oficiales si no están instalados y verifica su hash. Después de preparar el entorno y los modelos, el OCR y la búsqueda facial se ejecutan en el equipo sobre la biblioteca local. [API local](API.md) · [Acceso desde otro dispositivo](OPERATIONS.md#acceder-desde-otro-dispositivo)

@@ -1,56 +1,72 @@
-# Evaluación con fotos reales
+# Evaluación de dorsales y búsqueda por cara
 
-**Estado: pendiente.** No hay fotos reales de carreras accesibles en el proyecto, así que **no se publica ninguna métrica de precisión**. Todo lo que hay abajo es el procedimiento para obtenerlas.
+Esta guía explica cómo medir RaceFinder con fotos etiquetadas localmente. Usa fotos que tengas permiso para procesar. Para medir la búsqueda facial, confirma también que tienes permiso para ese análisis. Mantén las fotos, etiquetas y bibliotecas fuera de Git.
 
-## Opción A: herramienta de línea de órdenes (recomendada)
+## Preparar la muestra
 
-Trabaja sobre una biblioteca aislada en `data_eval/` (ignorada por git). No toca tu biblioteca `data/` ni modifica los originales.
+Incluye fotos con dorsales legibles, fotos con corredores sin dorsal legible y fotos sin dorsales, como público o carteles. Varía el tamaño, la luz, el ángulo y el número de corredores. Etiqueta antes de mirar el resultado del OCR para reducir el sesgo. Para comparar resultados, registra la versión, el modo, el dispositivo, el equipo y cuántas fotos hay en cada partición.
+
+Cada foto se asigna de forma determinista según su SHA-256. Aproximadamente el 30 % va a `tune` y el 70 % a `test`. Ajusta con `tune`, fija los parámetros y después usa `test` como validación final. La proporción efectiva puede variar en muestras pequeñas. Las fotos casi idénticas de una ráfaga pueden caer en particiones distintas. Para una comparación más exigente, reserva otra carrera o sesión completa y evalúala por separado.
+
+## Evaluar una carpeta desde PowerShell
+
+Desde la raíz del repositorio, con `backend/.venv` preparado por el [primer arranque](../README.md#primer-arranque-en-windows), crea la plantilla en la carpeta de las fotos. El comando preserva una plantilla existente.
 
 ```powershell
-cd backend
-.venv\Scripts\python.exe tools\eval_folder.py plantilla "D:\fotos\maraton"
+.\backend\.venv\Scripts\python.exe backend\tools\eval_folder.py plantilla 'D:\Fotos\Maraton'
 ```
 
-Rellena `D:\fotos\maraton\racefinder-etiquetas.json` (borra las entradas de las fotos que no quieras evaluar):
+Abre `racefinder-etiquetas.json`. Las claves son rutas relativas con `/` y la extensión original. El comando recorre subcarpetas e incluye JPG, JPEG, PNG y WebP.
 
 ```json
-"IMG_0012.jpg": {"bibs": ["184"], "present": ["77"], "tags": ["gorra"]}
+{
+  "meta/IMG_0012.jpg": {
+    "bibs": ["184"],
+    "present": ["77"],
+    "tags": ["varios_corredores", "gorra"]
+  },
+  "IMG_0100.jpg": {
+    "bibs": [],
+    "present": [],
+    "tags": ["cartel_reloj"]
+  }
+}
 ```
 
-| Campo | Qué poner |
-|---|---|
-| `bibs` | Dorsales que una persona puede **leer** en esa foto. |
-| `present` | Corredores que **salen** en la foto aunque su dorsal no se lea. Sirve para medir la búsqueda por cara. |
-| `tags` | Opcional: `inclinado`, `ocluido`, `pequeno`, `varios_corredores`, `fondo_complejo`, `cartel_reloj`, `poca_luz`, `desenfocado`, `cara_pequena`, `perfil`, `gafas`, `gorra`. |
+- `bibs` contiene los dorsales que puedes leer con seguridad. Escríbelos como cadenas para conservar ceros iniciales.
+- `present` contiene dorsales de corredores identificados con certeza por otra evidencia cuando su dorsal no se lee en esa foto.
+- `tags` es opcional. Usa `inclinado`, `ocluido`, `pequeno`, `varios_corredores`, `fondo_complejo`, `cartel_reloj`, `poca_luz`, `desenfocado`, `cara_pequena`, `perfil`, `gafas` o `gorra`.
+- Elimina del JSON las entradas sin revisar. Una entrada con las dos listas vacías se evalúa como ejemplo negativo. Si hay archivos idénticos byte a byte, deja una sola entrada por original.
+
+Ejecuta la evaluación con un destino nuevo para separar la biblioteca de ensayo de tu biblioteca habitual.
 
 ```powershell
-.venv\Scripts\python.exe tools\eval_folder.py evaluar "D:\fotos\maraton" --caras --consiento
+.\backend\.venv\Scripts\python.exe backend\tools\eval_folder.py evaluar 'D:\Fotos\Maraton' --datos 'D:\Evaluaciones\Maraton-01'
 ```
 
-Genera `informe-evaluacion.md` y `informe-evaluacion.json`, e indica cómo abrir esa biblioteca en la web para revisar los fallos. Sin `--caras` solo se mide el dorsal; `--consiento` es obligatorio para procesar caras.
+Para incluir caras, añade `--caras --consiento` a la orden anterior y usa un destino propio para esa evaluación. Los modelos pueden descargarse en el primer uso. Si omites `--datos`, se crea una biblioteca bajo `data_eval/`. Usa destinos distintos para comparar configuraciones desde cero. Reutilizar el destino reemplaza sus etiquetas de evaluación y puede aprovechar análisis previos. Los tiempos del CLI reflejan las fotos procesadas en esa ejecución.
 
-## Opción B: desde la web
-Arranca con otra carpeta de datos (`$env:RACEFINDER_DATA="D:\eval-racefinder"; pnpm run dev`), importa las fotos y entra en *Ajustes → Medir la precisión*. Se etiqueta foto a foto con los mismos campos. Después:
-- *Evaluar OCR*: vuelve a ejecutar el lector y mide también los tiempos (y los de las caras, si están activadas).
-- *Evaluar búsqueda (dorsal + cara)*: mide lo que ve el usuario, con las lecturas y caras ya guardadas.
+El destino contiene `informe-evaluacion.md` e `informe-evaluacion.json`. El JSON añade datos por partición, modo, condición y ejemplos de errores de búsqueda. Puedes abrir la biblioteca generada con `RACEFINDER_DATA` para revisar resultados. [Operación y bibliotecas](OPERATIONS.md#datos-y-copias-de-seguridad)
 
-## Qué se mide
+## Evaluar en la interfaz
 
-**OCR** (pares foto–número):
-- Precision, recall, F1, falsos positivos y falsos negativos.
-- Por foto: todos los dorsales encontrados, al menos uno, conjunto exacto y falsas alarmas en fotos sin dorsal legible.
-- Desglose por condición.
-- Tiempo medio, mediana, p95 y total.
+1. Abre **Ajustes → Medir la precisión (avanzado)** en una biblioteca de prueba.
+2. Etiqueta cada foto con sus dorsales visibles o indica que el dorsal es ilegible. Si sabes qué corredor aparece, registra también su dorsal en **Corredores sin dorsal legible**. Puedes añadir etiquetas de dificultad.
+3. Espera a que termine el análisis normal. Selecciona `tune` y pulsa **Evaluar OCR** para comparar lecturas contra etiquetas. Los parámetros de esta prueba se aplican a esa ejecución.
+4. Usa **Evaluar búsqueda (dorsal + cara)** para medir con el índice de la biblioteca. Para incluir caras, actívalas con permiso y espera a que termine su análisis.
+5. Cuando hayas fijado los parámetros, selecciona `test` y confirma la ejecución final.
 
-**Búsqueda**: para cada dorsal etiquetado como legible en al menos una foto, la verdad son las fotos en las que ese corredor aparece (`bibs` ∪ `present`). Se compara con tres modos:
-- *Solo dorsal*: incluye las lecturas dudosas, que la web muestra en "Por revisar".
-- *Solo cara*: semilla con las caras preseleccionadas, igual que la web.
-- *Dorsal o cara*.
+La interfaz guarda las ejecuciones en la biblioteca. **Evaluar OCR** vuelve a leer las fotos etiquetadas y recoge tiempos. **Evaluar búsqueda** reutiliza las lecturas y caras ya indexadas. Mide la búsqueda exacta y la selección automática de referencias, sin reproducir los filtros de álbum ni los cambios de referencias que haga el usuario en la interfaz.
 
-Se informa de precision, recall y F1 de cada modo, de la **recuperación de fotos sin dorsal legible por la cara** y del desglose por condición (`perfil`, `gafas`, `gorra`, `cara_pequena`…).
+## Interpretar el informe
 
-## Metodología
-- **Particiones:** cada foto va de forma determinista (por su SHA-256) a `tune` (≈30 %) o `test` (≈70 %). Los umbrales (`MATCH_THRESHOLD`, `doubtful_below`, parámetros del OCR) **solo** se ajustan mirando `tune`. `test` es la validación final: la web exige confirmarlo y registra cuántas veces se ha ejecutado.
-- **Tamaño de la muestra:** con menos de 30 fotos por partición las cifras se marcan como orientativas. Para la búsqueda por cara conviene que haya varios corredores que salgan en ≥3 fotos, con y sin dorsal legible.
-- **Etiquetado:** una foto con un dorsal ilegible no cuenta como fallo del OCR (no va en `bibs`), pero sí como fallo de la búsqueda si ese corredor sale y no se encuentra (va en `present`).
-- **Asociación cara–dorsal:** no hay etiquetas por cara, así que no se mide su exactitud de forma directa. Se mide indirectamente con la búsqueda por cara: una asociación equivocada produce falsos positivos.
+| Qué se mide | Unidad y lectura |
+| --- | --- |
+| OCR | Cada par foto–dorsal legible es una instancia. Un falso positivo es un número leído sin etiqueta y un falso negativo es un número etiquetado que falta. Se informa también por foto y por condición. |
+| Búsqueda | Por cada dorsal legible en la partición, se comparan las fotos encontradas con las fotos etiquetadas donde aparece el corredor. Incluye apariciones registradas en `present`. Con caras, se informa por dorsal, cara y unión de ambos. |
+| Aporte de la cara | Proporción de apariciones sin dorsal legible recuperadas por cara. Se mide la recuperación de fotos, de forma indirecta respecto a la asociación cara–dorsal. |
+| Tiempos | Dependen de equipo, dispositivo, modos, resolución y calentamiento de los modelos. En comparaciones de CLI, revisa el número de fotos efectivamente procesadas. |
+
+La precisión divide aciertos por resultados devueltos. La exhaustividad (*recall*) divide aciertos por resultados esperados. F1 resume ambas. Un campo sin denominador aparece vacío. Comparte el número de fotos y errores junto a las tasas, especialmente en muestras pequeñas.
+
+Si vas a compartir un informe, revisa la ruta de origen y los identificadores que aparecen en él. Publica resultados agregados y usa material autorizado para ilustrar fallos. [Estado de la validación](VALIDATION_REPORT.md)
